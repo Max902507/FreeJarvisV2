@@ -1,0 +1,39 @@
+volumes:
+  cargo-registry:
+  cargo-git:
+  rust-target:
+
+services:
+  freejarvis-python:
+    image: python:3.12-slim
+    container_name: freejarvis
+    working_dir: /app
+    command: python server.py
+    network_mode: host
+    environment:
+      JARVIS_PORT: 5050
+      PYTHONUNBUFFERED: "1"
+    volumes:
+      - ./:/app
+    restart: unless-stopped
+    init: true
+
+  freejarvis-rust:
+    image: rust:1-slim
+    container_name: freejarvis-rust
+    working_dir: /app/rust
+    command: cargo run
+    network_mode: host
+    environment:
+      JARVIS_HOST: 127.0.0.1
+      JARVIS_PORT: 6060
+      RUST_LOG: debug
+    volumes:
+      - ./:/app
+      - cargo-registry:/usr/local/cargo/registry
+      - cargo-git:/usr/local/cargo/git
+      - rust-target:/app/target
+    #restart: unless-stopped
+    init: true
+    profiles:
+      - rust
