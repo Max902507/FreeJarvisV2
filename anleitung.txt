@@ -1,5 +1,5 @@
 =====================================================================
-  FreeJarvis · JARVIS YouTube-Edition 2.0 · ANLEITUNG
+  FreeJarvis · JARVIS YouTube-Edition 2.1 · ANLEITUNG
 =====================================================================
 
 INHALT
@@ -21,11 +21,12 @@ INHALT
   16. Sicherheit
   17. Für Bastler: eigene Oberfläche bauen
   18. BOTS: DEIN EIGENES KI-TEAM
-  19. Was ist neu in 2.0?
-  20. PC-STEUERUNG: ORDNER, DATEIEN, PROGRAMME, SKRIPTE, SKRIPTE
-  21. KOSTEN: SPARMODUS, LIMIT UND KOSTEN-WIDGET
+  19. Was ist neu in 2.1 und 2.0?
+  20. PC-STEUERUNG: ORDNER, DATEIEN, PROGRAMME, SKRIPTE
+  21. KOSTEN: SPARMODUS, LIMIT, ZWISCHENSPEICHER UND KOSTEN-WIDGET
   22. HOME ASSISTANT UND WEBHOOKS (Smart Home, für Bastler)
   23. WIDGETS, KLANG UND MAUS
+  24. WEBSUCHE: CLAUDE ODER EIGENE SEARXNG-INSTANZ
 
 
 ---------------------------------------------------------------------
@@ -35,7 +36,12 @@ Jarvis ist ein persönlicher KI-Assistent im Browser. Er spricht, hört
 zu, merkt sich Dinge über dich und kann Timer stellen, Webseiten öffnen,
 das Wetter und deine Systemwerte zeigen.
 
-Version 2.0 ist das große Update. Neu sind unter anderem:
+Version 2.1 bringt die Websuche für Ollama und OpenAI-kompatible KIs
+(über eine eigene SearXNG-Instanz, Abschnitt 24), günstigere lange
+Gespräche mit Claude (Zwischenspeicher, Abschnitt 21) und viele
+Korrekturen aus einem zweiten Prüfbericht (Abschnitt 19).
+
+Version 2.0 war das große Update. Neu waren unter anderem:
   - ein Team aus Bots, die sichtbar um Jarvis kreisen und eigene
     Aufgaben übernehmen (Abschnitt 18)
   - 25 Oberflächen, Fenster in Milchglas-Optik, Widgets, Klang
@@ -63,12 +69,43 @@ Was du brauchst:
   - Für die lokale Variante: Ollama (https://ollama.com)
 Sonst nichts. Es muss nichts mit "pip install" installiert werden.
 
+WAS JARVIS KANN UND WAS NICHT
+Damit niemand Falsches erwartet:
+  KANN
+  - Chatten per Text und Sprache, Antworten vorlesen
+  - Sich Dinge über dich merken (Gedächtnis)
+  - Timer, Wetter, Systemwerte, Webseiten öffnen, eigene Routinen
+  - Ein Team aus Bots mit eigenem Auftrag und eigenem Modell
+  - Im Web suchen: mit Claude oder über deine eigene SearXNG-Instanz
+  - Am PC: Ordner ansehen, Textdateien lesen und schreiben, Dateien
+    öffnen, freigegebene Programme starten (alles nur nach Freigabe)
+  - Geräte über Home Assistant schalten, Webhooks auslösen
+  - Kosten mitzählen und ein Monatslimit einhalten
+  KANN NICHT
+  - Bilder, Videos, Musik oder 3D-Modelle erzeugen
+  - Bilder oder Videos ansehen und beschreiben
+  - Dateien löschen, verschieben oder Ordner anlegen
+  - Beliebige Befehle oder die Kommandozeile ausführen
+  - Selbstständig über viele Schritte recherchieren oder ganze
+    Webseiten lesen (die Websuche liefert kurze Auszüge)
+  - E-Mails, Kalender oder Messenger bedienen
+  - Ein fließendes Echtzeit-Gespräch, bei dem man jederzeit
+    dazwischenreden kann. Unterbrechen geht mit "Stopp".
+  - Ohne Terminalfenster laufen: Es gibt keinen Installer, das
+    schwarze Fenster ist der Jarvis-Server.
+
 
 ---------------------------------------------------------------------
 2. SCHNELLSTART IN 5 MINUTEN
 ---------------------------------------------------------------------
   1. Ordner "Jarvis" entpacken, z.B. nach C:\Jarvis
      (nicht im ZIP lassen, sonst klappt es nicht)
+     UPDATE von einer älteren Version: immer in einen NEUEN, LEEREN
+     Ordner entpacken, nie über den alten kopieren. Danach nur
+     einstellungen.json und gedaechtnis.json aus dem alten Ordner
+     übernehmen (Abschnitt 14, "Umsteigen").
+     Den Max-Klon (Max' persönliche Version aus den Videos) NICHT in
+     denselben Ordner legen. Das sind zwei getrennte Programme.
   2. Doppelklick auf  start.bat
      Es öffnet sich ein schwarzes Fenster. Das ist der Jarvis-Server.
      Dieses Fenster OFFEN LASSEN, solange du Jarvis benutzt.
@@ -110,7 +147,12 @@ Beenden: Im schwarzen Fenster Strg + C drücken oder das Fenster schließen.
      "↻ Modelle neu suchen" wählen. Dein Modell erscheint unter
      "Lokal · Ollama". Anklicken. Fertig.
 
-Ollama auf einem anderen PC oder unter WSL? Siehe Abschnitt 14.
+OLLAMA AUF EINEM ANDEREN PC IM HEIMNETZ: Das geht. Die KI muss nicht
+auf demselben Rechner laufen wie Jarvis, zum Beispiel auf einem
+stärkeren PC mit Grafikkarte oder einem Heimserver. Jarvis zählt das
+als LOKAL, denn die Anfragen bleiben in deinem Netz. Einrichtung
+siehe Abschnitt 14, ">> OLLAMA AUF EINEM ANDEREN PC IM HEIMNETZ".
+Ollama unter WSL? Ebenfalls Abschnitt 14.
 
 Tipp: Die erste Antwort nach dem Start dauert oft länger, weil Ollama
 das Modell erst in den Speicher lädt. Danach geht es schneller.
@@ -129,8 +171,9 @@ das Modell erst in den Speicher lädt. Danach geht es schneller.
   5. Oben rechts ein Claude-Modell auswählen.
 
 Websuche: Claude kann im Web nachsehen (Einstellungen -> KI & Modelle ->
-"Websuche"). Das kostet pro Suche etwas extra. Bei Ollama und OpenAI-
-kompatiblen Diensten gibt es in dieser Version keine Websuche.
+Websuche). Das kostet pro Suche etwas extra. Für Ollama und OpenAI-
+kompatible Dienste geht die Websuche seit 2.1 über eine eigene
+SearXNG-Instanz (Abschnitt 24).
 
 
 ---------------------------------------------------------------------
@@ -446,6 +489,13 @@ Jede Oberfläche reagiert auf vier Zustände:
                           Bots im Klartext (abschaltbar, siehe Abschnitt 15)
     kosten.json           entsteht mit der ersten KI-Anfrage: Token und
                           Kosten je Tag und Modell (keine Inhalte)
+    cloud_verlauf.json    entsteht mit der ersten Cloud-Anfrage: nur
+                          Prüfsummen, welche Nachrichten schon in der
+                          Cloud waren (keine Inhalte, siehe Abschnitt 15)
+    fehler.log            entsteht beim ersten Fehler, den der Browser
+                          nicht mehr anzeigen konnte (nur Meldungen)
+    LICENSE               Lizenz: PolyForm Noncommercial 1.0.0
+    Rechtshinweis.txt     die Lizenz in einfachen Worten, Haftung
     einstellungen.beispiel.json   nur zum Nachschlagen: alle Einstellungen
                           mit Standardwerten. Wird vom Programm nicht gelesen.
 
@@ -466,6 +516,9 @@ Für Programmierer, wo was im Code steht (server.py):
   PREISE            Listenpreise der Claude-Modelle
   ha_befehl()       erkennt Sätze für Home Assistant
   ha_dienst()       ruft einen Dienst in Home Assistant auf
+  kein_befehl()     erkennt verneinte Sätze und Fragen (schalten nichts)
+  searx_suche()     Websuche über die eigene SearXNG-Instanz
+  claude_cache()    Zwischenspeicher (Prompt-Caching) für Claude
   adresse_art()     unterscheidet eigenen PC, Heimnetz und Internet
   pc_aktion()       prüft, fragt nach und führt eine PC-Aktion aus
   pc_pfad()         stellt sicher, dass ein Pfad in einem freigegebenen
@@ -482,14 +535,18 @@ Adresse im schwarzen Fenster an.
 ---------------------------------------------------------------------
 14. FEHLERBEHEBUNG
 ---------------------------------------------------------------------
->> VON VERSION 1.x UMSTEIGEN
-   1. Neue Version in einen EIGENEN Ordner entpacken, nicht über den
-      alten kopieren (alte Dateien würden sonst liegen bleiben).
+>> UMSTEIGEN VON EINER ÄLTEREN VERSION (1.x, 2.0, 2.0.1)
+   1. Neue Version in einen EIGENEN, LEEREN Ordner entpacken, nie über
+      den alten kopieren. Sonst bleiben alte Dateien liegen, und alte
+      und neue Teile mischen sich. Das führt zu Fehlern, die nur
+      manchmal auftreten und schwer zu finden sind.
    2. Aus dem alten Ordner einstellungen.json und gedaechtnis.json in
       den neuen kopieren. Schlüssel, Stimme, Routinen und das
       Gedächtnis sind dann sofort da. Neue Einstellungen bekommen
       automatisch ihre Standardwerte.
    3. Alten Jarvis beenden (schwarzes Fenster schließen), neuen starten.
+   Nur diese zwei Dateien übernehmen, sonst nichts. Den Max-Klon nicht
+   in denselben Ordner legen, das ist ein anderes Programm.
    ACHTUNG: Die alte einstellungen.json bringt deine alten Schalter mit.
    In 1.x war die Websuche an. Wer Kosten sparen will: Einstellungen ->
    KI & Modelle -> Websuche aus (Abschnitt 21).
@@ -509,6 +566,22 @@ Adresse im schwarzen Fenster an.
    - Ollama starten (Startmenü) oder in cmd:  ollama serve
    - Test im Browser:  http://localhost:11434  -> "Ollama is running"
    - Andere Adresse? In den Einstellungen unter "Ollama -> Adresse".
+
+>> OLLAMA AUF EINEM ANDEREN PC IM HEIMNETZ
+   Jarvis und Ollama müssen nicht auf demselben Rechner laufen.
+   1. Auf dem PC mit Ollama: Ollama muss Anfragen aus dem Netz
+      annehmen. Dazu die Umgebungsvariable OLLAMA_HOST auf 0.0.0.0
+      setzen und Ollama neu starten (Windows: Systemsteuerung ->
+      Umgebungsvariablen; Linux/Mac: OLLAMA_HOST=0.0.0.0 ollama serve).
+      Die Windows-Firewall muss Port 11434 im privaten Netz erlauben.
+   2. Die Adresse dieses PCs herausfinden (Windows: ipconfig, Zeile
+      IPv4-Adresse, z.B. 192.168.1.50).
+   3. In Jarvis: Einstellungen -> KI & Modelle -> Ollama -> Adresse:
+      http://192.168.1.50:11434   dann "Verbindung testen".
+   Jarvis zeigt dann LOKAL: Die Anfragen bleiben in deinem Netz. Auch
+   "Strikt lokal" erlaubt Adressen im eigenen Netz (Abschnitt 15).
+   Achtung: OLLAMA_HOST=0.0.0.0 öffnet Ollama für alle Geräte in deinem
+   Netz. Nur im eigenen, vertrauenswürdigen Netz so einstellen.
 
 >> OLLAMA LÄUFT UNTER WSL (Linux in Windows)
    Normalerweise erreicht Windows ein Ollama in WSL über localhost.
@@ -579,7 +652,7 @@ bist:
                 private Netzadressen (192.168.x.x, 10.x.x.x, name.local)
                 gelten als lokal.
   CLOUD         die KI läuft beim Anbieter (Claude, OpenAI ...)
-  STRIKT LOKAL  nichts verlässt den PC
+  STRIKT LOKAL  nichts geht ins Internet (Heimnetz ist erlaubt)
   🔒 LOKAL BEANTWORTET   eine private Nachricht wurde lokal beantwortet
 Ein Klick darauf öffnet die Datenschutz-Einstellungen.
 
@@ -600,8 +673,21 @@ Einstellungen -> Datenschutz:
   Läuft Ollama nicht, schickt Jarvis die Nachricht NICHT in die Cloud,
   sondern sagt Bescheid. Mit "Trotzdem an die Cloud senden" kannst du
   sie bewusst doch schicken.
-  Private Nachrichten und ihre Antworten werden auch später nicht als
-  Gesprächsverlauf an die Cloud geschickt.
+
+  VERLAUF BEIM WECHSEL ZWISCHEN LOKAL UND CLOUD (seit 2.0.1)
+  Eine Cloud-KI bekommt als Gesprächsverlauf nur Nachrichten, die schon
+  einmal in der Cloud waren. Alles andere bleibt auf dem PC: Gespräche
+  mit Ollama, Nachrichten, die die Privat-Weiche lokal beantwortet hat,
+  und Befehle, die Jarvis ohne KI erledigt hat. Wechselst du von Ollama
+  zu Claude, fängt Claude also ohne den lokalen Verlauf an. Im Chat
+  steht dann ein kurzer Hinweis. Neuladen der Seite oder ein Neustart
+  ändern daran nichts.
+  Das entscheidet der Server, nicht der Browser: Er merkt sich von jeder
+  Nachricht, die er selbst an eine Cloud-KI geschickt hat, eine
+  Prüfsumme (Datei cloud_verlauf.json, keine Texte). Umgekehrt bekommt
+  Ollama den ganzen Verlauf, denn der bleibt ja auf dem PC.
+  Willst du etwas aus einem lokalen Gespräch mit Claude besprechen:
+  einfach noch einmal hineinschreiben.
 
   EHRLICH: Die Erkennung arbeitet mit Mustern und Wortlisten. Nummern,
   E-Mails und IBANs findet sie zuverlässig. Einen Satz wie "meiner
@@ -616,10 +702,19 @@ Einstellungen -> Datenschutz:
   An: Das Gedächtnis geht bei JEDER Anfrage an den Cloud-Anbieter mit.
 
   STRIKT LOKAL (Standard: aus)
-  Nichts verlässt deinen PC. Gesperrt werden: Claude, OpenAI, ElevenLabs,
-  Wetter, Websuche und die Spracheingabe des Browsers. Jarvis nutzt nur
-  Ollama und nur Stimmen, die auf deinem PC installiert sind.
-  Du musst dann tippen.
+  Nichts geht ins Internet. Gesperrt werden: Claude, OpenAI, ElevenLabs,
+  Wetter, Websuche und die Spracheingabe des Browsers. Erlaubt bleiben
+  Adressen auf deinem PC und in deinem eigenen Heimnetz, zum Beispiel
+  Ollama oder Home Assistant auf einem anderen Rechner zu Hause. Die
+  Daten verlassen dann zwar diesen PC, aber nicht dein Netz. Seit 2.0.1 auch
+  das Abfragen der Modellliste und der Verbindungstest: Mit "Strikt
+  lokal" baut Jarvis keine einzige Verbindung ins Internet auf, auch
+  wenn Schlüssel eingetragen sind. Jarvis nutzt nur Ollama und nur
+  Stimmen, die auf deinem PC installiert sind. Hat der Browser keine
+  solche Stimme, bleibt Jarvis stumm und sagt einmal Bescheid, warum.
+  Antworten stehen dann nur im Chat. Du musst tippen.
+  Webseiten öffnen ("Öffne YouTube") geht weiter: Das macht dein
+  Browser auf deinen Befehl hin, Jarvis schickt dabei nichts weg.
 
 Was in den anderen Modi den PC verlässt, auch mit Ollama:
   - SPRACHEINGABE: Die Spracherkennung von Chrome und Edge läuft über
@@ -630,8 +725,11 @@ Was in den anderen Modi den PC verlässt, auch mit Ollama:
     Server von Microsoft bzw. Google. Die Windows-Stimmen ohne diesen
     Zusatz laufen lokal.
   - WETTER: Nur der Ortsname geht an Open-Meteo.
-  - WEBSUCHE (nur Claude): Claude sucht bei Bedarf im Web.
-    Standardmäßig AUS, weil jede Suche extra kostet.
+  - WEBSUCHE: Standardmäßig AUS. Mit Claude sucht Claude bei Bedarf
+    im Web. Mit SearXNG (Abschnitt 24) gehen die Suchbegriffe an deine
+    SearXNG-Instanz, und die fragt Suchmaschinen im Internet. Enthält
+    ein Suchbegriff private Daten (Telefonnummer, IBAN ...), sucht
+    Jarvis nicht.
   - HOME ASSISTANT (Abschnitt 22): Schaltbefehle gehen an die Adresse,
     die du eingetragen hast. Standardmäßig AUS.
   - WEBHOOK-ROUTINEN: rufen die Adresse auf, die du in der Routine
@@ -647,13 +745,23 @@ Klartext auf deiner Platte):
                        Aufgaben (Privat-Weiche) werden NICHT gespeichert.
                        Abschalten und löschen: Einstellungen -> Bots ->
                        "Verlauf mitschreiben" bzw. "Verlauf löschen".
+                       Ist das Mitschreiben aus, speichert Jarvis seit
+                       2.1 auch die letzte Aufgabe nicht mehr.
   kosten.json          Token und Kosten je Tag und Modell. Keine Texte,
                        keine Fragen, keine Antworten.
+  cloud_verlauf.json   Prüfsummen der Nachrichten, die schon in der
+                       Cloud waren (siehe oben). Keine Texte.
+  fehler.log           Fehlermeldungen, die den Browser nicht mehr
+                       erreicht haben (z.B. Seite neu geladen, während
+                       die KI noch arbeitete). Nur die Meldung, keine
+                       Fragen und Antworten. Darf gelöscht werden.
   *.bak                Sicherung, wenn die PC-Steuerung eine vorhandene
                        Textdatei ersetzt hat (siehe Abschnitt 20)
   - BOTS: Nutzt ein Bot eine Cloud-KI, geht seine Aufgabe an diesen
     Anbieter. Privat-Weiche und "Strikt lokal" gelten auch für Bots
-    (siehe Abschnitt 18).
+    (siehe Abschnitt 18). Seit 2.1 gibt ein lokal arbeitender Jarvis
+    von sich aus keine Aufgabe an einen Cloud-Bot ab. Direkt mit
+    @Name angesprochen arbeitet der Bot wie gewohnt.
 
 Unter Einstellungen -> Datenschutz -> "Was verlässt gerade deinen PC?"
 siehst du das live für deine aktuellen Einstellungen.
@@ -671,7 +779,8 @@ dort Persönliches eingibst.
   - Schlüssel stehen im Klartext in einstellungen.json. Diese Datei
     NIEMALS weitergeben, hochladen oder in Videos zeigen.
   - Beim Teilen des Ordners (z.B. GitHub) einstellungen.json,
-    gedaechtnis.json, bot_statistik.json und kosten.json weglassen. Die beiliegende .gitignore macht das
+    gedaechtnis.json, bot_statistik.json, kosten.json und cloud_verlauf.json
+    weglassen. Die beiliegende .gitignore macht das
     bei Git automatisch.
   - Auch die API-Schlüssel einzelner Bots stehen in einstellungen.json.
   - Jarvis nimmt nur Anfragen an, die von seiner eigenen Seite kommen.
@@ -681,12 +790,22 @@ dort Persönliches eingibst.
          sein, auf dem Jarvis läuft (schützt vor DNS-Rebinding, also
          vor fremden Adressen, die heimlich auf 127.0.0.1 zeigen).
       2. Wird ein Origin mitgeschickt, muss er genau dieser Adresse
-         entsprechen. Auch ein anderer Dienst auf deinem eigenen
-         Rechner darf Jarvis also nicht steuern.
+         entsprechen. Auch eine Webseite, die ein anderes Programm auf
+         deinem Rechner ausliefert, kann Jarvis also nicht steuern.
       3. Jede schreibende Anfrage braucht den Kopfzeilen-Eintrag
          X-Jarvis: 1. Eine fremde Seite darf den nur nach einer
          CORS-Vorabfrage setzen, und die beantwortet Jarvis mit 403.
     Danke an Pascal für den Hinweis auf diese Lücke in Version 1.1.
+    EHRLICH: Diese Prüfungen schützen vor Webseiten im Browser. Ein
+    Programm, das direkt auf deinem PC unter deinem Benutzerkonto
+    läuft, kann alle drei Prüfungen erfüllen und Jarvis ansprechen. So
+    ein Programm könnte aber ohnehin deine einstellungen.json lesen.
+    Gegen Schadsoftware auf dem eigenen PC schützt Jarvis nicht.
+  - Weiterleitungen: Leitet ein KI-Dienst, Home Assistant oder ein
+    Webhook auf eine andere Adresse um, folgt Jarvis dem seit 2.1 nicht
+    mehr und meldet das. Sonst wäre der Schlüssel mit umgeleitet
+    worden, und eine Adresse im Heimnetz hätte ins Internet zeigen
+    können.
   - PC-Steuerung: siehe Abschnitt 20. Sie ist standardmäßig aus.
   - Schutz-Kopfzeilen bei jeder Antwort: Keine fremde Seite kann
     Jarvis unsichtbar einbetten und dir Klicks unterschieben
@@ -706,7 +825,9 @@ dort Persönliches eingibst.
   - Auf Linux und macOS darf nur dein Benutzer einstellungen.json,
     gedaechtnis.json und kosten.json lesen.
   - Home Assistant: Schlösser und Alarmanlagen sind absichtlich nicht
-    freigegeben (Abschnitt 22).
+    freigegeben (Abschnitt 22). Ein Skript oder eine Szene in Home
+    Assistant kann sie aber trotzdem schalten. Was deine Skripte tun,
+    entscheidest du in Home Assistant.
   - EHRLICH: Jarvis ist ein Hobby-Projekt ohne Gewähr. Es wurde
     sorgfältig geprüft, eine Garantie auf Fehlerfreiheit gibt es
     nicht. Nutzung auf eigene Verantwortung. Wer eine Lücke findet:
@@ -863,8 +984,50 @@ FEHLER BEI BOTS
 
 
 ---------------------------------------------------------------------
-19. WAS IST NEU IN 2.0?
+19. WAS IST NEU IN 2.1 UND 2.0?
 ---------------------------------------------------------------------
+Version 2.1 (zweiter Prüfbericht von Thomas und Wünsche der Community):
+  Neu
+  - Websuche für Ollama und OpenAI-kompatible KIs über eine eigene
+    SearXNG-Instanz (Abschnitt 24)
+  - Zwischenspeicher (Prompt-Caching) für Claude: Lange Gespräche
+    werden deutlich günstiger (Abschnitt 21)
+  - Fehlermeldungen gehen nicht mehr verloren, wenn der Browser die
+    Verbindung trennt: Sie stehen im schwarzen Fenster und in
+    fehler.log
+  Korrekturen
+  - Home Assistant und Routinen: Verneinte Sätze ("Kinoabend bitte
+    nicht starten"), Erklärfragen ("Was macht Kinoabend?") und echte
+    Fragen schalten nichts mehr. Szenen und Skripte brauchen ein
+    Startwort ("Starte Kinoabend"). Höfliche Bitten wie "Kannst du das
+    Licht anmachen?" funktionieren jetzt
+  - PC-Steuerung: Beim Speichern einer Datei konnte Jarvis dieselbe
+    Aktion mehrmals hintereinander auslösen. Die Rückmeldung ist jetzt
+    eindeutig, und dieselbe Aktion läuft pro Frage nur einmal
+  - Die Freigabe-Karte beim Schreiben zeigt den vollständigen Inhalt,
+    nicht nur die ersten 600 Zeichen
+  - Ein lokal arbeitender Jarvis gibt keine Aufgabe mehr von sich aus
+    an einen Cloud-Bot ab (die Aufgabe hätte Gedächtnis oder Datei-
+    Inhalte enthalten können). @Name geht weiter
+  - Weiterleitungen werden nicht mehr verfolgt (Abschnitt 16)
+  - Die Anzeige LOKAL/CLOUD nutzt dieselbe Adressprüfung wie der Server
+  - Kostenlimit: Für ein Modell ohne hinterlegten Preis wird bei
+    gesetztem Limit nichts gesendet, weil das Limit sonst nie greifen
+    würde
+  - OpenAI-kompatible Dienste bekommen eine Obergrenze für die
+    Antwortlänge
+  - Bot-Verlauf aus: auch die letzte Aufgabe wird nicht gespeichert
+  - Hinweistext bei Home Assistant korrigiert
+
+Version 2.0.1 (Korrekturen aus dem ersten Prüfbericht von Thomas):
+  - Beim Wechsel von Ollama zu Claude oder OpenAI geht der lokale
+    Verlauf nicht mehr mit in die Cloud (Abschnitt 15)
+  - "Strikt lokal" baut keine Verbindung ins Internet mehr auf, auch
+    nicht für die Modellliste oder den Verbindungstest
+  - Ohne lokale Browser-Stimme bleibt Jarvis im strikten Modus stumm
+  - Der Name des Assistenten wird nur noch als Text angezeigt
+  - Neue Lizenz: PolyForm Noncommercial 1.0.0 (siehe Rechtshinweis.txt)
+
 Gegenüber Version 1.x (Teil 1 und das Sicherheits-Update 1.2):
 
   KI und Kosten
@@ -968,6 +1131,8 @@ DIE SCHALTER
     Vor jeder Aktion erscheint oben eine Karte: "Jarvis möchte etwas an
     deinem PC tun" mit Erlauben und Ablehnen. Ohne Antwort wird nach
     90 Sekunden abgelehnt. Wer Jarvis vertraut, kann das ausschalten.
+    Beim Schreiben zeigt die Karte den vollständigen Inhalt (scrollbar),
+    genau so, wie er in die Datei kommt.
   Dateien schreiben (Standard: aus)
     Jarvis darf Textdateien und Skripte anlegen und ändern. Ersetzt er eine
     vorhandene Datei, bleibt die alte Fassung als .bak daneben liegen.
@@ -1007,12 +1172,12 @@ FEHLER BEI DER PC-STEUERUNG
   >> Es kommt keine Nachfrage-Karte und nichts passiert
      Das Modell hat die Aktion nicht sauber ausgelöst. Größeres Modell
      nehmen oder einen der festen Befehle oben benutzen.
-
-Viel Spaß!
+  >> Jarvis speichert dieselbe Datei mehrmals
+     Behoben in 2.1: Dieselbe Aktion läuft pro Frage nur einmal.
 
 
 ---------------------------------------------------------------------
-21. KOSTEN: SPARMODUS, LIMIT UND KOSTEN-WIDGET
+21. KOSTEN: SPARMODUS, LIMIT, ZWISCHENSPEICHER UND KOSTEN-WIDGET
 ---------------------------------------------------------------------
 Betrifft nur Claude und andere Dienste mit API-Schlüssel. Ollama kostet
 nichts.
@@ -1023,8 +1188,8 @@ bisherige Verlauf und deine Frage hin (Eingabe) und die Antwort zurück
 (Ausgabe). Lange Gespräche werden deshalb mit jeder Runde teurer.
 
 SPARMODUS (Einstellungen -> KI & Modelle, Standard: an)
-  - Nur die letzten 8 Nachrichten gehen mit (sonst 20), ältere werden
-    gekürzt.
+  - Nur die letzten 5 bis 8 Nachrichten gehen mit (sonst bis zu 16),
+    ältere werden gekürzt.
   - Vom Gedächtnis gehen nur die neuesten Einträge mit.
   - Reine Befehle wie "Timer 10 Minuten", "Öffne YouTube" oder "Merk
     dir ..." bestätigt Jarvis selbst, ohne die KI zu fragen.
@@ -1033,15 +1198,40 @@ SPARMODUS (Einstellungen -> KI & Modelle, Standard: an)
     Worten zusammen, das ist ein KI-Aufruf mehr.
 Weitere Spartipps:
   - Antwortlänge auf "Kurz" lassen.
-  - Websuche aus lassen. Bei Claude kostet jede Suche extra.
+  - Websuche aus lassen. Bei Claude kostet jede Suche extra, und die
+    gefundenen Seiten zählen als Eingabe-Token. Günstiger: SearXNG
+    (Abschnitt 24).
+  - Zwischenspeicher bei Claude anlassen (siehe unten).
   - Ein kleines Modell wählen (bei Claude ist Haiku das günstigste).
   - Home-Assistant-Befehle und Routinen laufen ganz ohne KI.
   - Für Privates und Alltägliches Ollama nutzen.
+
+ZWISCHENSPEICHER / PROMPT-CACHING (nur Claude, Standard: an)
+  Bei jeder Frage gehen die Anweisungen an Jarvis und der bisherige
+  Verlauf erneut mit. Mit dem Zwischenspeicher hebt Anthropic diesen
+  Teil 5 Minuten lang auf. Bei der nächsten Frage kostet er dann nur
+  noch einen Bruchteil: 10 Prozent des normalen Eingabepreises, bei
+  Opus 5.5 und Sonnet 5.5 sogar nur 5 Prozent (Stand 20.11.2026,
+  Quelle: platform.claude.com/docs/en/build-with-claude/prompt-caching).
+  Das erste Speichern kostet 25 Prozent mehr als normal. Lohnt sich
+  also, sobald man mehr als eine Frage stellt.
+  Damit das klappt, kürzt Jarvis den Verlauf in Stufen statt nach
+  jeder Runde, und Uhrzeit und gerade erledigte Befehle stehen bei der
+  aktuellen Frage statt in den festen Anweisungen.
+  EHRLICH: Sehr kurze Anweisungen speichert Anthropic gar nicht
+  zwischen, dann kostet es auch nichts extra. Wie viel man spart,
+  hängt vom Gespräch ab. Das Kosten-Widget rechnet mit dem, was
+  Anthropic als Verbrauch meldet. Abschalten: Einstellungen -> KI &
+  Modelle -> Claude -> Zwischenspeicher.
 
 MONATSLIMIT (Einstellungen -> KI & Modelle)
   Betrag in US-Dollar, 0 = kein Limit. Ist das Limit im laufenden Monat
   erreicht, sendet Jarvis nichts mehr an eine Cloud-KI und sagt das.
   Ollama geht weiter.
+  Ist ein Limit gesetzt und kennt Jarvis den Preis eines Cloud-Modells
+  nicht, sendet er seit 2.1 nichts an dieses Modell und sagt Bescheid.
+  Ohne Preis würde mit 0 Dollar gerechnet und das Limit nie erreicht.
+  Dann den Preis unter "Eigene Preise" eintragen.
 
 MEIN GUTHABEN
   Trag ein, was beim Anbieter als Guthaben steht. Jarvis zieht ab dem
@@ -1061,7 +1251,8 @@ PREISE
   Beispiel:  gpt-5 = 1.25 / 10   (aktuelle Preise beim Anbieter nachsehen)
   "modellteil" ist ein Stück des Modellnamens. Eigene Zeilen gehen vor
   den hinterlegten Preisen. Ohne Preis zählt Jarvis nur die Token, und
-  das Widget weist darauf hin.
+  das Widget weist darauf hin. Mit gesetztem Monatslimit sendet Jarvis
+  an ein Modell ohne Preis nichts (siehe Monatslimit).
 
 KOSTEN-WIDGET (Einstellungen -> Oberfläche -> Widgets -> Kosten)
   Zeigt: Kosten heute und im Monat, Balken zum Limit, Rest-Guthaben,
@@ -1095,9 +1286,18 @@ SPRECHEN
      "Stehlampe auf 40 Prozent"
      "Ist der Fernseher an?"
      "Starte Kinoabend"                (Szene oder Skript)
+     "Kannst du das Licht anmachen?"   (höfliche Bitte geht auch)
      "Fire TV pause" / "Fire TV weiter"
      "Rollo Küche hoch" / "Rollo Küche runter"
   Das läuft ohne KI: mit jedem Modell, sofort und ohne Token-Kosten.
+  Szenen und Skripte startet Jarvis nur mit einem Startwort: starte,
+  an, ein, aktiviere, los, ausführen. Nur "Kinoabend" startet nichts.
+  Seit 2.1 schaltet nichts bei:
+     verneinten Sätzen  "Kinoabend bitte nicht starten",
+                        "Licht nicht ausmachen"
+     Erklärfragen       "Was macht Kinoabend?", "Erkläre Kinoabend"
+  Das gilt auch für Routinen. Fragen wie "Ist der Fernseher an?"
+  beantwortet Jarvis mit dem Zustand.
   Heißt ein Gerät in Home Assistant "Deckenleuchte EG 2", musst du es
   auch so nennen. Tipp: den Geräten in Home Assistant sprechbare Namen
   geben oder eine Routine anlegen.
@@ -1128,6 +1328,11 @@ ERLAUBTE GERÄTEARTEN
   Schlösser (lock) und Alarmanlagen (alarm_control_panel) stehen
   absichtlich nicht drin. Wer sie einträgt, tut das auf eigene Gefahr:
   Spracherkennung versteht auch mal etwas falsch.
+  WICHTIG: Diese Sperre gilt nur für das direkte Schalten. Startet
+  Jarvis ein Skript oder eine Szene, macht Home Assistant alles, was
+  darin steht, auch Schlösser aufschließen. Was ein Skript darf,
+  legst du in Home Assistant fest. Kritisches nicht in Skripte packen,
+  die Jarvis starten kann.
 
 ALEXA
   Eine direkte Verbindung zu Alexa hat Jarvis nicht. Der Weg führt über
@@ -1171,3 +1376,58 @@ LADESCREEN
   ein Ausrufezeichen, wurde keine KI gefunden: nach dem Start oben
   links in die Einstellungen (Abschnitt 3 bis 5).
 
+
+---------------------------------------------------------------------
+24. WEBSUCHE: CLAUDE ODER EIGENE SEARXNG-INSTANZ
+---------------------------------------------------------------------
+Standardmäßig AUS. Einstellungen -> KI & Modelle -> Websuche.
+
+SUCHEN ÜBER "Claude-Websuche"
+  Nur mit Claude. Claude entscheidet selbst, wann es sucht, und liest
+  die gefundenen Seiten. Jede Suche kostet extra, und die Seiten zählen
+  als Eingabe-Token. Das kann bei vielen Fragen teuer werden.
+
+SUCHEN ÜBER "Eigene SearXNG-Instanz"
+  Für alle KIs, vor allem für Ollama und OpenAI-kompatible Dienste, die
+  selbst nicht ins Internet können. SearXNG ist eine freie
+  Metasuchmaschine, die man selbst betreibt (zum Beispiel per Docker
+  auf dem eigenen PC oder einem Heimserver). Sie fragt Suchmaschinen
+  wie Google, Bing oder DuckDuckGo und gibt die Treffer gesammelt
+  zurück.
+  So arbeitet Jarvis damit:
+  - Sagst du "Such mal nach ...", "Was gibt es Neues ...", "aktuelle
+    Nachrichten ..." oder ähnlich, fragt Jarvis SearXNG sofort.
+  - Sonst kann die KI selbst eine Suche anfordern, wenn sie aktuelle
+    Informationen braucht (höchstens eine Suche pro Frage). Kleine
+    Modelle tun das nicht immer zuverlässig. Dann hilft "Such mal".
+  - Die KI bekommt die ersten 5 Treffer: Titel, Adresse und einen
+    kurzen Auszug. Ganze Webseiten lädt Jarvis nicht. Das hält die
+    Anfrage klein und kostet bei Cloud-KIs kaum mehr.
+  EINRICHTEN
+  1. SearXNG installieren (Anleitung: docs.searxng.org). Mit Docker
+     zum Beispiel auf Port 8888.
+  2. WICHTIG: In der settings.yml der Instanz das JSON-Format
+     erlauben. Unter "search:" bei "formats:" die Zeile "- json"
+     ergänzen und SearXNG neu starten. Ohne das antwortet SearXNG mit
+     Fehler 403, und Jarvis sagt Bescheid.
+  3. In Jarvis: Websuche an, "Suchen über: Eigene SearXNG-Instanz",
+     Adresse eintragen (z.B. http://localhost:8888), "Suche testen".
+  Öffentliche SearXNG-Instanzen erlauben JSON meistens nicht und
+  bremsen automatische Anfragen. Eine eigene Instanz ist der
+  zuverlässige Weg.
+
+DATENSCHUTZ
+  - Die Suchbegriffe gehen an deine SearXNG-Instanz und von dort an die
+    Suchmaschinen im Internet. Die KI-Anfrage selbst bleibt, wo sie
+    ist (bei Ollama also auf deinem PC).
+  - Enthält ein Suchbegriff private Daten (Telefonnummer, IBAN,
+    E-Mail ...), sucht Jarvis nicht. Hat die Privat-Weiche eine
+    Nachricht lokal umgeleitet, wird dafür ebenfalls nicht gesucht.
+  - EHRLICH: Fordert die KI selbst eine Suche an, formuliert sie die
+    Suchbegriffe. Ein Name oder ein Thema aus deinem Gedächtnis kann
+    darin vorkommen, das erkennt die Privat-Weiche nicht.
+  - "Strikt lokal" sperrt die Websuche ganz, auch über SearXNG im
+    Heimnetz, weil SearXNG selbst ins Internet geht.
+  - Bots suchen weiterhin nur mit Claude.
+
+Viel Spaß!

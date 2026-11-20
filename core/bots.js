@@ -385,7 +385,7 @@
   const card = document.createElement("div"); card.id = "jv-botcard"; card.className = "jv-glass"; document.body.appendChild(card);
   function ort(cfg) {
     const st = J.settings || {}, prov = cfg.anbieter || st.anbieter;
-    return { prov, cloud: !st.strikt_lokal && J.isCloud(prov, cfg.api_url ? Object.assign({}, st, { openai_url: cfg.api_url }) : st) };
+    return { prov, cloud: !st.strikt_lokal && J.isCloud(prov, cfg.api_url ? Object.assign({}, st, { openai_url: cfg.api_url, ollama_url: cfg.api_url }) : st) };
   }
   function modellVon(cfg) { const st = J.settings || {}; return cfg.modell || (cfg.anbieter ? "automatisch" : (st.modell || "automatisch")); }
   function cardHtml(cfg, busy) {
@@ -393,7 +393,7 @@
     return `<div class="bc-h"><i style="background:${esc(cfg.farbe)};box-shadow:0 0 10px ${esc(cfg.farbe)}"></i><b>${esc(cfg.name)}</b><span class="${o.cloud ? "cl" : "lo"}">${o.cloud ? "CLOUD" : "LOKAL"}</span></div>
 <p>${esc(cfg.rolle || "Kein Kurztext hinterlegt")}</p>
 <dl><dt>KI</dt><dd>${esc(PROVN[cfg.anbieter || ""])} · ${esc(modellVon(cfg))}</dd>
-<dt>Erledigt</dt><dd>${s.anzahl || 0} Aufgabe${s.anzahl === 1 ? "" : "n"}${s.dauer ? " · zuletzt " + s.dauer + " s" : ""}</dd></dl>
+<dt>Erledigt</dt><dd>${+s.anzahl || 0} Aufgabe${s.anzahl === 1 ? "" : "n"}${s.dauer ? " · zuletzt " + (+s.dauer || 0) + " s" : ""}</dd></dl>
 <div class="bc-v"><u>${busy ? "Arbeitet gerade" : "Verarbeitet"}</u>${v.length ? v.map(x => `<div class="${x.ok ? "" : "er"}"><b>${esc(x.zeit)}</b> ${esc(x.aufgabe)}${x.antwort ? `<span>→ ${esc(x.antwort)}</span>` : ""}</div>`).join("") : '<div class="le">Noch nichts verarbeitet.</div>'}</div>
 <small>${busy ? "arbeitet gerade …" : "Klick: Dashboard · Ziehen: verschieben · im Chat: @" + esc(cfg.name)}</small>`;
   }
@@ -453,11 +453,11 @@
     const box = dq(".bd-body"), cfg = D.cfg, s = B.stats[D.id] || {}, o = ort(cfg);
     if (D.tab === "ueber") {
       const v = (s.verlauf || []).slice().reverse();
-      box.innerHTML = `<div class="bd-kpi"><div><b>${s.anzahl || 0}</b><small>Aufgaben</small></div><div><b>${s.dauer ? s.dauer + " s" : "—"}</b><small>letzte Dauer</small></div><div><b>${o.cloud ? "Cloud" : "Lokal"}</b><small>Ort</small></div></div>
+      box.innerHTML = `<div class="bd-kpi"><div><b>${+s.anzahl || 0}</b><small>Aufgaben</small></div><div><b>${s.dauer ? (+s.dauer || 0) + " s" : "—"}</b><small>letzte Dauer</small></div><div><b>${o.cloud ? "Cloud" : "Lokal"}</b><small>Ort</small></div></div>
 <dl class="bd-dl"><dt>KI</dt><dd>${esc(PROVN[cfg.anbieter || ""])}</dd><dt>Modell</dt><dd>${esc(modellVon(cfg))}</dd>
 <dt>Auftrag</dt><dd>${esc(cfg.auftrag || cfg.rolle || "—")}</dd>${cfg.stichwoerter ? `<dt>Stichwörter</dt><dd>${esc(cfg.stichwoerter)}</dd>` : ""}
 ${s.fehler ? `<dt>Fehler</dt><dd class="er">${esc(s.fehler)}</dd>` : ""}</dl>
-<h5>Verarbeitet</h5><div class="bd-log">${v.length ? v.map(x => `<div class="${x.ok ? "" : "er"}"><span>${esc(x.zeit)} · ${x.dauer} s · ${esc(x.modell || "")}</span><b>${esc(x.aufgabe)}</b>${x.antwort ? `<p>${esc(x.antwort)}</p>` : ""}</div>`).join("") : '<div class="le">Noch nichts verarbeitet. Schreib im Chat „@' + esc(cfg.name) + ' …“.</div>'}</div>
+<h5>Verarbeitet</h5><div class="bd-log">${v.length ? v.map(x => `<div class="${x.ok ? "" : "er"}"><span>${esc(x.zeit)} · ${+x.dauer || 0} s · ${esc(x.modell || "")}</span><b>${esc(x.aufgabe)}</b>${x.antwort ? `<p>${esc(x.antwort)}</p>` : ""}</div>`).join("") : '<div class="le">Noch nichts verarbeitet. Schreib im Chat „@' + esc(cfg.name) + ' …“.</div>'}</div>
 <div class="bd-foot"><button type="button" class="jv-btn" id="bd-task">Aufgabe geben</button><button type="button" class="jv-btn" id="bd-ref">Aktualisieren</button></div>`;
       dq("#bd-task").onclick = () => { const i = $("jv-input"); if (i) { i.value = "@" + cfg.name + " "; i.focus(); } dashZu(); };
       dq("#bd-ref").onclick = () => loadStats(dashBody);

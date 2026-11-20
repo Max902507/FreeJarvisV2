@@ -1,4 +1,4 @@
-/* FreeJarvis · Maus-Schicht (2.4)
+/* FreeJarvis · Maus-Schicht
    Gilt für jede Oberfläche, ohne dass diese etwas tun muss:
    1. Partikel reagieren auf den Zeiger (J.glowAt wird abgefangen):
         "abstossen"  weichen aus,  "anziehen"  folgen dem Zeiger,  "wirbel"  kreisen um den Zeiger.

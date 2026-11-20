@@ -10,6 +10,7 @@ Nur Python-Standardbibliothek, nichts zu installieren.
 Start:  python server.py     danach im Browser:  http://localhost:5050
 """
 import datetime
+import hashlib
 import ipaddress
 import json
 import os
@@ -29,12 +30,14 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 if sys.version_info < (3, 8):
     sys.exit("Python 3.8 oder neuer wird benötigt.")
 
-VERSION = "2.0"
+VERSION = "2.1"
 BASE = os.path.dirname(os.path.realpath(__file__))
 SETTINGS_FILE = os.path.join(BASE, "einstellungen.json")
 MEMORY_FILE = os.path.join(BASE, "gedaechtnis.json")
 BOTSTAT_FILE = os.path.join(BASE, "bot_statistik.json")
 KOSTEN_FILE = os.path.join(BASE, "kosten.json")
+CLOUD_VERLAUF_FILE = os.path.join(BASE, "cloud_verlauf.json")   # nur Prüfsummen, keine Texte
+FEHLER_FILE = os.path.join(BASE, "fehler.log")                  # Fehlermeldungen, die den Browser nicht mehr erreicht haben
 PORT = int(os.environ.get("JARVIS_PORT", "5050"))
 AKTIV_PORT = [PORT]               # der Port, auf dem Jarvis wirklich läuft (für die Herkunftsprüfung)
 HOST = "127.0.0.1"
@@ -52,7 +55,7 @@ DEFAULTS = {
     "claude_key": "",
     "openai_key": "",
     "openai_url": "https://api.openai.com/v1",
-    "websuche": False,               # nur Claude; kostet extra je Suche, deshalb standardmäßig aus
+    "websuche": False,               # Claude-Websuche oder SearXNG (suche_dienst); standardmäßig aus
     "sparmodus": True,               # weniger Token: kurzer Verlauf, knappes Gedächtnis, Befehle ohne KI-Rückfrage bestätigen
     "antwortlaenge": "kurz",         # kurz | normal | ausfuehrlich
     "stimme": "browser",             # browser | elevenlabs | aus
@@ -93,7 +96,10 @@ DEFAULTS = {
     "widget_wetter": False, "widget_notizen": False, "widget_uhr": False, "widget_system": False, "widget_kosten": False,
     "kosten_limit": 0.0,            # Monatslimit in US-Dollar für Cloud-KI (0 = kein Limit)
     "kosten_guthaben": 0.0,         # dein Guthaben beim Anbieter in US-Dollar (selbst eingetragen, 0 = unbekannt)
-    "kosten_preise": "",            # eigene Preise je Zeile: modellteil = eingabe / ausgabe (US-Dollar je 1 Mio. Token)
+    "kosten_preise": "",
+    "prompt_cache": True,
+    "suche_dienst": "claude",
+    "suche_url": "",            # eigene Preise je Zeile: modellteil = eingabe / ausgabe (US-Dollar je 1 Mio. Token)
     "ha_an": False,                 # Home Assistant: Geräte per Sprache und Routine schalten (standardmäßig AUS)
     "ha_url": "http://homeassistant.local:8123",
     "ha_token": "",                 # Langlebiger Zugriffstoken aus Home Assistant
@@ -188,6 +194,9 @@ def public_settings(s):
         v = str(s.get(k) or "")
         out[k] = (MASK + v[-4:]) if v else ""
     out["bots"] = [dict(b, api_key=(MASK + b["api_key"][-4:]) if b.get("api_key") else "") for b in s.get("bots") or []]
+    # Die Anzeige im Browser übernimmt die Einstufung vom Server (pc, netz, internet), statt selbst zu raten
+    urls = [s.get("ollama_url"), s.get("openai_url"), s.get("ha_url"), s.get("suche_url")] + [b.get("api_url") for b in s.get("bots") or []]
+    out["_orte"] = {u: adresse_art(u) for u in urls if u}
     return out
 
 
@@ -356,13 +365,31 @@ def mem_text(limit=4000):
 
 
 # ---------------------------------------------------------------- HTTP-Helfer
+class Umweg(urllib.error.HTTPError):
+    """Der Dienst wollte auf eine andere Adresse umleiten. Jarvis folgt dem nicht."""
+
+    def __init__(self, req, fp, code, headers, ziel):
+        super().__init__(req.full_url, code, "Weiterleitung blockiert", headers, fp)
+        self.ziel = ziel
+
+
+class _KeinUmweg(urllib.request.HTTPRedirectHandler):
+    # Python schickt bei einer Weiterleitung die Kopfzeilen mit, also auch den API-Schlüssel. Außerdem könnte eine
+    # Adresse im Heimnetz so ins Internet umleiten, obwohl strikt lokal an ist. Deshalb: keine Weiterleitungen.
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        raise Umweg(req, fp, code, headers, newurl)
+
+
+OPENER = urllib.request.build_opener(_KeinUmweg())
+
+
 def http(url, data=None, headers=None, timeout=20, method=None):
     body = json.dumps(data).encode("utf-8") if data is not None else None
     h = {"User-Agent": "Jarvis-YouTube-Edition/" + VERSION}
     if body is not None:
         h["Content-Type"] = "application/json"
     h.update(headers or {})
-    return urllib.request.urlopen(urllib.request.Request(url, data=body, headers=h, method=method), timeout=timeout)
+    return OPENER.open(urllib.request.Request(url, data=body, headers=h, method=method), timeout=timeout)
 
 
 def get_json(url, headers=None, timeout=10):
@@ -371,6 +398,10 @@ def get_json(url, headers=None, timeout=10):
 
 
 def http_error_text(e):
+    if isinstance(e, Umweg):
+        ziel = urllib.parse.urlparse(e.ziel).hostname or e.ziel[:80]
+        return (f"Die Adresse leitet weiter (nach {ziel}). Jarvis folgt Weiterleitungen aus Sicherheitsgründen nicht. "
+                "Trag bitte die endgültige Adresse direkt ein.")
     try:
         raw = e.read().decode("utf-8", "replace")
         j = json.loads(raw)
@@ -394,7 +425,12 @@ def cached(key, sec, fn):
 
 
 # ---------------------------------------------------------------- Modelle
+STRIKT_SPERRE = "Strikt lokal ist an: keine Verbindung ins Internet."
+
+
 def ollama_models(s):
+    if s.get("strikt_lokal") and adresse_art(s.get("ollama_url") or "") == "internet":
+        return {"ok": False, "models": [], "fehler": STRIKT_SPERRE + " Die Ollama-Adresse liegt im Internet."}
     try:
         j = get_json(s["ollama_url"] + "/api/tags", timeout=2.5)
         names = [m.get("name") for m in j.get("models", []) if m.get("name")]
@@ -409,6 +445,8 @@ def ollama_models(s):
 
 
 def claude_models(s):
+    if s.get("strikt_lokal"):                       # Claude ist immer Internet: im strikten Modus nicht einmal die Modellliste holen
+        return {"ok": False, "models": [], "fehler": STRIKT_SPERRE}
     key = s.get("claude_key")
     if not key:
         return {"ok": False, "models": [], "fehler": "Kein Claude-Schlüssel eingetragen."}
@@ -436,7 +474,10 @@ def openai_models(s):
     base, key = s.get("openai_url") or "", s.get("openai_key") or ""
     if not base:
         return {"ok": False, "models": [], "fehler": "Keine Basis-Adresse eingetragen."}
-    local = "localhost" in base or "127.0.0.1" in base
+    art = adresse_art(base)                         # dieselbe Prüfung wie überall: pc, netz oder internet
+    if s.get("strikt_lokal") and art == "internet":
+        return {"ok": False, "models": [], "fehler": STRIKT_SPERRE}
+    local = art != "internet"
     if not key and not local:
         return {"ok": False, "models": [], "fehler": "Kein Schlüssel eingetragen."}
 
@@ -746,13 +787,35 @@ def merk_text(t):
     return t
 
 
+# Sätze, die nichts auslösen dürfen: verneint ("Kinoabend bitte nicht starten"), Erklärfragen ("Was macht die Routine
+# Kinoabend?") und echte Fragen. Höfliche Bitten mit Fragezeichen ("Kannst du Kinoabend starten?") gelten als Befehl.
+VERNEINT_RE = re.compile(r"\b(nicht|nichts|kein|keine|keinen|keinem|keiner|nie|niemals)\b")
+ERKLAER_RE = re.compile(r"^\s*(?:bitte\s+)?(?:erklär\w*|erklaer\w*|beschreib\w*|warum|wieso|weshalb|"
+                        r"was\s+(?:macht|passiert|bedeutet|bewirkt|tut)|wie\s+funktioniert)\b")
+FRAGE_RE = re.compile(r"^\s*(?:und\s+|aber\s+)?(?:was|wie|warum|wieso|weshalb|wann|wer|wo|welche\w*|ist|sind|läuft|laeuft|"
+                      r"hast|hat|gibt|erklär\w*|erklaer\w*|beschreib\w*)\b")
+HOEFLICH_RE = re.compile(r"^\s*(?:bitte\s+)?(?:kannst|könntest|koenntest|würdest|wuerdest|magst|kann ich)\b")
+
+
+def kein_befehl(u, satz=""):
+    """True, wenn der Satz zwar die Routine oder das Gerät nennt, aber nichts ausgelöst werden soll."""
+    n, sn = _norm(u), _norm(satz)
+    if VERNEINT_RE.search(n) and not VERNEINT_RE.search(sn):
+        return True
+    if sn and FRAGE_RE.search(sn):                 # die Routine ist selbst als Frage formuliert ("wie spät ist es")
+        return False
+    if FRAGE_RE.search(n):
+        return True
+    return u.rstrip().endswith("?") and not HOEFLICH_RE.search(n)
+
+
 def route(u, s, orig=None, ohne_url=False):
     """Erkennt Befehle vor dem KI-Aufruf. Liefert (aktionen, kontext, direkte_antwort)."""
     orig = orig or u
     actions, ctx, direct, kurz = [], [], None, []       # kurz: fertige Bestätigungen, die keine KI brauchen
     for r in s.get("routinen") or []:
         satz = _norm(r.get("satz", ""))
-        if satz and satz in _norm(u):
+        if satz and satz in _norm(u) and not kein_befehl(u, r.get("satz", "")):
             a, w = r.get("aktion"), (r.get("wert") or "").strip()
             if a == "briefing":
                 u += " briefing"
@@ -940,7 +1003,17 @@ TAGE = ["Montag", "Dienstag", "Mittwoch", "Donnerstag", "Freitag", "Samstag", "S
 MONATE = ["Januar", "Februar", "März", "April", "Mai", "Juni", "Juli", "August", "September", "Oktober", "November", "Dezember"]
 
 
-def system_prompt(s, ctx, websuche, mit_gedaechtnis=True, ohne_team=False, pc_ok=False):
+class Prompt(str):
+    """Systemprompt aus einem festen Teil (ändert sich selten, darf zwischengespeichert werden) und einem wechselnden
+    Teil (Uhrzeit, gerade erledigte Befehle). Für Ollama und OpenAI ist es einfach der ganze Text."""
+
+    def __new__(cls, stabil, variabel=""):
+        o = super().__new__(cls, stabil + ("\n\n" + variabel if variabel else ""))
+        o.stabil, o.variabel = stabil, variabel
+        return o
+
+
+def system_prompt(s, ctx, websuche, mit_gedaechtnis=True, ohne_team=False, pc_ok=False, lokal=False, suche_tag=False):
     now = datetime.datetime.now()
     name = s.get("name") or "Jarvis"
     p = [f"Du bist {name}, ein persönlicher KI-Assistent im Stil von J.A.R.V.I.S.: ruhig, schlagfertig, hilfsbereit, mit einem "
@@ -948,7 +1021,7 @@ def system_prompt(s, ctx, websuche, mit_gedaechtnis=True, ohne_team=False, pc_ok
          "Deine Antworten werden laut vorgelesen: kurze, natürliche Sätze. Kein Markdown, keine Sternchen, keine Aufzählungszeichen, "
          "keine Emojis, keine Links ausschreiben. " + LAENGE.get(s.get("antwortlaenge"), LAENGE["kurz"]),
          "Erfinde nichts. Wenn du etwas nicht weißt oder nicht nachsehen kannst, sag das ehrlich.",
-         f"Heute ist {TAGE[now.weekday()]}, der {now.day}. {MONATE[now.month - 1]} {now.year}, es ist {now:%H:%M} Uhr."]
+         f"Heute ist {TAGE[now.weekday()]}, der {now.day}. {MONATE[now.month - 1]} {now.year}. Die genaue Uhrzeit steht ganz unten."]
     if s.get("nutzer"):
         p.append(f"Dein Nutzer heißt {s['nutzer']}. Sprich ihn ab und zu mit Namen an.")
     if s.get("persona"):
@@ -958,6 +1031,10 @@ def system_prompt(s, ctx, websuche, mit_gedaechtnis=True, ohne_team=False, pc_ok
              "du etwas ausgeführt hast, wenn es unten nicht als erledigt steht.")
     if websuche:
         p.append("Du kannst das Web durchsuchen. Nutze es für aktuelle Fragen und nenne die Quelle in Worten.")
+    elif suche_tag:
+        p.append("Du kannst eine Websuche anfordern. Brauchst du für die Antwort aktuelle Informationen aus dem Internet, "
+                 "antworte mit GENAU einer Zeile und sonst nichts: [suche: wenige Suchbegriffe]. Danach bekommst du die "
+                 "Suchergebnisse. Für Smalltalk und Allgemeinwissen suchst du nicht.")
     else:
         p.append("Du hast keinen Internetzugang. Für aktuelle Ereignisse sag ehrlich, dass dein Wissen einen Stand hat.")
     if mit_gedaechtnis:
@@ -972,6 +1049,8 @@ def system_prompt(s, ctx, websuche, mit_gedaechtnis=True, ohne_team=False, pc_ok
     if s.get("pc_an") and pc_ok:
         p.append(pc_prompt(s))
     team = [b for b in s.get("bots") or [] if b.get("aktiv")]
+    if lokal:                                       # lokales Gespräch: nichts von sich aus an einen Cloud-Bot abgeben
+        team = [b for b in team if not bot_ist_cloud(s, b)]
     if team and s.get("bot_delegieren") and not ohne_team:
         p.append("DEIN TEAM (Bots mit Spezialgebiet):\n" + "\n".join(f"- {b['name']}: {b.get('rolle') or 'ohne Beschreibung'}" for b in team) +
                  "\nFällt eine Aufgabe klar in das Spezialgebiet eines Bots, antworte mit GENAU einer Zeile und sonst nichts: "
@@ -979,9 +1058,10 @@ def system_prompt(s, ctx, websuche, mit_gedaechtnis=True, ohne_team=False, pc_ok
                  "Nötige in die Aufgabe. Einfache Fragen und Smalltalk beantwortest du selbst. Höchstens ein Bot pro Antwort.")
     elif team:
         p.append("Es gibt Bots im Team: " + ", ".join(b["name"] for b in team) + ". Der Nutzer spricht sie mit @Name selbst an.")
+    v = [f"Es ist jetzt {now:%H:%M} Uhr."]
     if ctx:
-        p.append("GERADE ERLEDIGT / ECHTE DATEN:\n" + "\n".join(ctx))
-    return "\n\n".join(p)
+        v.append("GERADE ERLEDIGT / ECHTE DATEN:\n" + "\n".join(ctx))
+    return Prompt("\n\n".join(p), "\n\n".join(v))
 
 
 def bot_prompt(s, bot, websuche):
@@ -991,19 +1071,81 @@ def bot_prompt(s, bot, websuche):
          "Deine Antworten werden laut vorgelesen: klare, natürliche Sätze. Kein Markdown, keine Sternchen, keine Emojis. "
          "Code darfst du in einem Codeblock ausgeben, er wird nicht vorgelesen. " + LAENGE.get(s.get("antwortlaenge"), LAENGE["kurz"]),
          "Erfinde nichts. Wenn du etwas nicht weißt oder nicht nachsehen kannst, sag das ehrlich.",
-         f"Heute ist {TAGE[now.weekday()]}, der {now.day}. {MONATE[now.month - 1]} {now.year}, es ist {now:%H:%M} Uhr."]
+         f"Heute ist {TAGE[now.weekday()]}, der {now.day}. {MONATE[now.month - 1]} {now.year}."]
     if bot.get("auftrag"):
         p.insert(2, "Dein Auftrag: " + bot["auftrag"])
     if s.get("nutzer"):
         p.append(f"Der Nutzer heißt {s['nutzer']}.")
     p.append("Du kannst das Web durchsuchen. Nutze es für aktuelle Fragen und nenne die Quelle in Worten." if websuche else
              "Du hast keinen Internetzugang. Für aktuelle Ereignisse sag ehrlich, dass dein Wissen einen Stand hat.")
-    return "\n\n".join(p)
+    return Prompt("\n\n".join(p), f"Es ist jetzt {now:%H:%M} Uhr.")
 
 
 # ---------------------------------------------------------------- KI-Anbieter (Streaming)
 class KIError(Exception):
     pass
+
+
+class Abgebrochen(Exception):
+    """Der Browser hat die Verbindung getrennt (Seite neu geladen, Fenster zu, Stopp gedrückt)."""
+
+
+def fehler_log(text):
+    """Schreibt eine Fehlermeldung ins Terminalfenster und in fehler.log (nur die Meldung, nie der Chat)."""
+    zeile = datetime.datetime.now().strftime("%d.%m.%Y %H:%M:%S") + "  " + re.sub(r"\s+", " ", str(text))[:400]
+    print("! " + zeile, flush=True)
+    with LOCK:
+        try:
+            alt = open(FEHLER_FILE, encoding="utf-8").read().splitlines()[-199:] if os.path.exists(FEHLER_FILE) else []
+            with open(FEHLER_FILE, "w", encoding="utf-8") as f:
+                f.write("\n".join(alt + [zeile]) + "\n")
+        except OSError:
+            pass
+
+
+# ---------------------------------------------------------------- Cloud-Verlauf
+# Welche früheren Nachrichten dürfen als Verlauf an eine Cloud-KI? Nur die, die schon einmal in der Cloud waren.
+# Das entscheidet der Server, nicht der Browser: Er merkt sich von jeder Nachricht, die er selbst an eine Cloud-KI
+# geschickt hat (und von deren Antwort), eine Prüfsumme. Alles andere aus dem Verlauf (lokale Ollama-Gespräche,
+# von der Privat-Weiche umgeleitete Nachrichten, Befehle, die ohne KI erledigt wurden) bleibt draußen.
+# Die Datei cloud_verlauf.json enthält nur diese Prüfsummen, keine Texte. Sie überlebt Neuladen und Neustart.
+CLOUD_VERLAUF = {}
+CLOUD_MAX = 4000
+
+
+def _vk(role, text):
+    r = "assistant" if role == "assistant" else "user"
+    return hashlib.sha256((r + "\n" + str(text or "").strip()[:6000]).encode("utf-8")).hexdigest()[:32]
+
+
+def cloud_verlauf_load():
+    try:
+        with open(CLOUD_VERLAUF_FILE, encoding="utf-8") as f:
+            d = json.load(f)
+        if isinstance(d, list):
+            CLOUD_VERLAUF.clear()
+            CLOUD_VERLAUF.update((str(k), True) for k in d[-CLOUD_MAX:])
+    except (OSError, ValueError):
+        pass
+
+
+def cloud_merken(role, text):
+    if not str(text or "").strip():
+        return
+    with LOCK:
+        CLOUD_VERLAUF.pop(_vk(role, text), None)
+        CLOUD_VERLAUF[_vk(role, text)] = True
+        while len(CLOUD_VERLAUF) > CLOUD_MAX:
+            CLOUD_VERLAUF.pop(next(iter(CLOUD_VERLAUF)))
+        try:
+            write_json(CLOUD_VERLAUF_FILE, list(CLOUD_VERLAUF), None)
+        except OSError:
+            pass
+
+
+def fuer_cloud(msgs):
+    """Nur die Nachrichten, die der Server selbst schon an eine Cloud-KI geschickt oder von ihr bekommen hat."""
+    return [m for m in msgs if isinstance(m, dict) and _vk(m.get("role"), m.get("content")) in CLOUD_VERLAUF]
 
 
 def clean_history(msgs, ohne_privat=False, n=20):
@@ -1020,7 +1162,11 @@ def clean_history(msgs, ohne_privat=False, n=20):
             out[-1]["content"] += "\n" + text
         else:
             out.append({"role": role, "content": text})
-    out = out[-n:]
+    if len(out) > n:
+        # In Stufen kürzen statt jede Runde eine Nachricht vorne abzuschneiden: So bleibt der Anfang des Verlaufs
+        # mehrere Runden gleich und Claude kann ihn aus dem Zwischenspeicher lesen (deutlich billiger).
+        stufe = max(2, n // 2)
+        out = out[-(-(len(out) - n) // stufe) * stufe:]
     while out and out[0]["role"] != "user":
         out.pop(0)
     if n < 20:
@@ -1069,8 +1215,27 @@ def _sse(r):
                 continue
 
 
+def claude_cache(system, msgs):
+    """Prompt-Caching: Der feste Teil des Systemprompts und der bisherige Verlauf werden bei Anthropic für 5 Minuten
+    zwischengespeichert. Bei der nächsten Frage kostet dieser Teil nur noch einen Bruchteil (Lesen: 10 Prozent des
+    Eingabepreises, bei manchen Modellen weniger). Das erste Speichern kostet 25 Prozent mehr. Zu kurze Texte speichert
+    Anthropic nicht, dann kostet es nichts extra. Uhrzeit und gerade erledigte Befehle wechseln und stehen deshalb
+    bei der aktuellen Frage, hinter dem gespeicherten Teil."""
+    marke = {"type": "ephemeral"}
+    sys_bl = [{"type": "text", "text": system.stabil, "cache_control": marke}]
+    out = [dict(m) for m in msgs]
+    letzte = out[-1]["content"]
+    out[-1]["content"] = ([{"type": "text", "text": "[Hinweis vom Programm, nicht vom Nutzer]\n" + system.variabel}] if system.variabel else []) + \
+        [{"type": "text", "text": letzte}]
+    if len(out) >= 2:
+        out[-2]["content"] = [{"type": "text", "text": out[-2]["content"], "cache_control": marke}]
+    return sys_bl, out
+
+
 def stream_claude(s, model, system, msgs, z, on_event):
     body = {"model": model, "max_tokens": s.get("_maxtok") or 1200, "system": system, "messages": msgs, "stream": True}
+    if s.get("prompt_cache", True) and isinstance(system, Prompt) and msgs:
+        body["system"], body["messages"] = claude_cache(system, msgs)
     if s.get("websuche"):
         body["tools"] = [{"type": "web_search_20250305", "name": "web_search", "max_uses": 3}]
     hdr = {"x-api-key": s.get("claude_key", ""), "anthropic-version": "2023-06-01"}
@@ -1082,7 +1247,9 @@ def stream_claude(s, model, system, msgs, z, on_event):
                 us = (ev.get("message") or {}).get("usage") if t == "message_start" else ev.get("usage") if t == "message_delta" else None
                 if us:                                   # Verbrauch, wie ihn Anthropic abrechnet
                     if us.get("input_tokens") is not None:
-                        z["ein"] = us["input_tokens"] + (us.get("cache_creation_input_tokens") or 0) + (us.get("cache_read_input_tokens") or 0)
+                        cw, cr = us.get("cache_creation_input_tokens") or 0, us.get("cache_read_input_tokens") or 0
+                        z["ein"] = us["input_tokens"] + cw + cr          # gesamt, davon aus dem Zwischenspeicher:
+                        z["cache_schreiben"], z["cache_lesen"] = cw, cr
                     if us.get("output_tokens") is not None:
                         z["aus"] = us["output_tokens"]
                     z["suchen"] = (us.get("server_tool_use") or {}).get("web_search_requests") or z.get("suchen", 0)
@@ -1118,15 +1285,24 @@ def stream_openai(s, model, system, msgs, z):
     base, key = s.get("openai_url", ""), s.get("openai_key", "")
     body = {"model": model, "stream": True, "messages": [{"role": "system", "content": system}] + msgs,
             "stream_options": {"include_usage": True}}          # der Anbieter soll den Verbrauch mitschicken
+    # Obergrenze für die Antwortlänge, damit eine Antwort nicht beliebig teuer werden kann. OpenAI selbst will dafür
+    # max_completion_tokens, und Denk-Modelle verbrauchen einen Teil davon fürs Nachdenken: dort mehr Spielraum.
+    tok = s.get("_maxtok") or 1200
+    if "api.openai.com" in base:
+        body["max_completion_tokens"] = max(tok, 4000)
+    else:
+        body["max_tokens"] = tok
     hdr = {"Authorization": "Bearer " + key} if key else {}
     try:
-        try:
-            r = http(base + "/chat/completions", body, hdr, timeout=300)
-        except urllib.error.HTTPError as e:
-            if e.code != 400:
-                raise
-            del body["stream_options"]                           # manche Server kennen die Option nicht: ohne sie nochmal
-            r = http(base + "/chat/completions", body, hdr, timeout=300)
+        r = None
+        while r is None:
+            try:
+                r = http(base + "/chat/completions", body, hdr, timeout=300)
+            except urllib.error.HTTPError as e:     # manche Server kennen eine Option nicht: ohne sie nochmal
+                weg = next((k for k in ("stream_options", "max_tokens", "max_completion_tokens") if k in body), None)
+                if e.code != 400 or isinstance(e, Umweg) or not weg:
+                    raise
+                del body[weg]
         with r:
             for ev in _sse(r):
                 if ev.get("error"):
@@ -1149,10 +1325,10 @@ def stream_openai(s, model, system, msgs, z):
 
 
 class TagFilter:
-    """Entfernt <think>...</think> und [merken: ...] aus dem Strom und sammelt die Merk-Einträge."""
+    """Entfernt <think>...</think>, [merken: ...], [bot: ...], [suche: ...] und [pc: ...] aus dem Strom und sammelt sie."""
 
     def __init__(self):
-        self.buf, self.think, self.merk, self.bots, self.pc = "", False, [], [], []
+        self.buf, self.think, self.merk, self.bots, self.pc, self.suche = "", False, [], [], [], []
 
     def feed(self, text, final=False):
         self.buf += text
@@ -1205,8 +1381,11 @@ class TagFilter:
             tag, self.buf = self.buf[:j + 1], self.buf[j + 1:]
             m = re.match(r"\[\s*merken\s*:\s*(.+?)\s*\]$", tag, re.I | re.S)
             mb = re.match(r"\[\s*bot\s*:\s*([^|\]]+?)\s*\|\s*(.+?)\s*\]$", tag, re.I | re.S)
+            ms = re.match(r"\[\s*suche\s*:\s*(.+?)\s*\]$", tag, re.I | re.S)
             if m:
                 self.merk.append(m.group(1))
+            elif ms:
+                self.suche.append(ms.group(1)[:200])
             elif mb:
                 self.bots.append((mb.group(1), mb.group(2)))
             else:
@@ -1364,7 +1543,7 @@ def pc_ausfuehren(s, aktion, ziel, inhalt=""):
         if gab:                                                         # alte Fassung nie verlieren
             shutil.copy2(p, p + ".bak")
         with open(p, "w", encoding="utf-8", newline="\n") as f:
-            f.write(inhalt.replace("\\n", "\n") if "\n" not in inhalt else inhalt)
+            f.write(pc_inhalt(inhalt))
         return ("Datei geändert (alte Fassung als .bak gesichert)" if gab else "Datei angelegt"), \
             f"Die Datei {p} wurde {'überschrieben, die alte Fassung liegt daneben als .bak' if gab else 'neu angelegt'}."
     if aktion == "datei":
@@ -1377,6 +1556,11 @@ def pc_ausfuehren(s, aktion, ziel, inhalt=""):
         _oeffnen(p)
         return "Datei geöffnet", f"Die Datei {p} wurde mit dem Standardprogramm geöffnet."
     raise PCError(f"Unbekannte Aktion '{aktion}'. Möglich: liste, lesen, schreiben, programm, ordner, datei.")
+
+
+def pc_inhalt(inhalt):
+    """Genau der Text, der in die Datei geschrieben wird (manche Modelle schreiben Zeilenumbrüche als \\n)."""
+    return inhalt.replace("\\n", "\n") if "\n" not in inhalt else inhalt
 
 
 def pc_aktion(s, aktion, ziel, inhalt, emit, cloud):
@@ -1395,7 +1579,7 @@ def pc_aktion(s, aktion, ziel, inhalt, emit, cloud):
             fid, ev = uuid.uuid4().hex[:10], threading.Event()
             PC_WARTEN[fid] = [ev, False]
             emit({"t": "action", "typ": "pc_frage", "id": fid, "aktion": aktion, "text": pc_text(aktion, ziel),
-                  "vorschau": inhalt[:600] if aktion == "schreiben" else ""})
+                  "vorschau": pc_inhalt(inhalt) if aktion == "schreiben" else ""})     # vollständig: freigegeben wird, was man sieht
             ev.wait(90)
             ja = PC_WARTEN.pop(fid, [None, False])[1]
             if not ja:
@@ -1403,7 +1587,11 @@ def pc_aktion(s, aktion, ziel, inhalt, emit, cloud):
         kurz, lang = pc_ausfuehren(s, aktion, ziel, inhalt)
         eintrag.update(ok=True, info=kurz)
         emit({"t": "action", "typ": "pc", "ok": True, "aktion": aktion, "text": pc_text(aktion, ziel), "info": kurz})
-        return lang
+        if aktion in ("liste", "lesen"):
+            return "ERFOLGREICH. " + lang
+        # Eindeutig formuliert: Sonst hielten manche Modelle die Rückmeldung für einen Fehler und lösten dieselbe Aktion
+        # immer wieder aus, bis das Limit griff (Meldung aus der Community).
+        return f"ERFOLGREICH ERLEDIGT. {lang} Diese Aktion ist abgeschlossen und darf nicht wiederholt werden."
     except PCError as e:
         eintrag["info"] = str(e)
         emit({"t": "action", "typ": "pc", "ok": False, "aktion": aktion, "text": pc_text(aktion, ziel), "info": str(e)})
@@ -1432,7 +1620,8 @@ def pc_prompt(s):
             "Um etwas am PC zu tun, schreibe als LETZTE Zeile deiner Antwort genau eine Aktion in dieser Form:\n" + "\n".join(akt) +
             "\nDanach bekommst du das Ergebnis und antwortest dem Nutzer. Pfade beginnen immer mit dem Namen eines freigegebenen "
             "Ordners. Du kannst nichts löschen, nichts verschieben und keine Befehle ausführen. Behaupte nie, etwas getan zu haben, "
-            "bevor das Ergebnis da ist. Steht im Ergebnis NICHT AUSGEFÜHRT, sag ehrlich, warum.")
+            "bevor das Ergebnis da ist. Steht im Ergebnis ERFOLGREICH, ist die Aktion erledigt: nicht wiederholen. Steht im Ergebnis "
+            "NICHT AUSGEFÜHRT, sag ehrlich, warum.")
 
 
 PC_PROG_RE = re.compile(r"\b(?:starte|start|öffne|oeffne|mach)\s+(?:mal\s+|bitte\s+)?(?:das\s+programm\s+|die\s+app\s+|den\s+|die\s+|das\s+)?(.+?)(?:\s+auf)?[\s.!]*$")
@@ -1479,8 +1668,10 @@ def pc_waehlen(art):
 def ki_stream(s, anbieter, model, system, msgs, on_event):
     """Fragt die KI und liefert die Antwort stückweise. Zählt dabei den Verbrauch und hält das Kostenlimit ein."""
     cloud = ist_cloud(s, anbieter)
+    if cloud and s.get("strikt_lokal"):             # letzte Sicherung, falls ein Weg die Weiche oben umgeht
+        raise KIError(STRIKT_SPERRE)
     if cloud:
-        sperre = kosten_sperre(s)
+        sperre = kosten_sperre(s, anbieter, model)
         if sperre:
             raise KIError(sperre)
     z, zeichen = {}, 0
@@ -1557,12 +1748,28 @@ def preis(s, anbieter, model):
     return None
 
 
+def cache_faktor(model):
+    """Preis für gelesene Zwischenspeicher-Token im Verhältnis zum Eingabepreis (Stand siehe PREISE_STAND).
+    Quelle: platform.claude.com/docs/en/build-with-claude/prompt-caching. Schreiben kostet das 1,25-Fache."""
+    name = (model or "").lower().replace(".", "-")
+    if any(t in name for t in ("fable-5-2", "mythos-5-2", "fable-5-1", "mythos-5-1")):
+        return 0.025
+    if any(t in name for t in ("opus-5-5", "sonnet-5-5")):
+        return 0.05
+    return 0.1
+
+
 def kosten_buchen(s, anbieter, model, z, cloud):
     ein, aus, suchen = int(z.get("ein") or 0), int(z.get("aus") or 0), int(z.get("suchen") or 0)
+    cw, cr = int(z.get("cache_schreiben") or 0), int(z.get("cache_lesen") or 0)    # in "ein" enthalten
     if not ein and not aus:
         return
     pr = preis(s, anbieter, model) if cloud else (0, 0)
-    usd = ((ein * pr[0] + aus * pr[1]) / 1e6 + suchen * SUCHE_USD) if pr else 0.0
+    if pr:
+        normal = max(0, ein - cw - cr)
+        usd = (normal * pr[0] + cw * pr[0] * 1.25 + cr * pr[0] * cache_faktor(model) + aus * pr[1]) / 1e6 + suchen * SUCHE_USD
+    else:
+        usd = 0.0
     with LOCK:
         tag = KOSTEN["tage"].setdefault(datetime.date.today().isoformat(), {})
         e = tag.setdefault(f"{anbieter}|{model}", {"ein": 0, "aus": 0, "anfragen": 0, "suchen": 0, "usd": 0.0})
@@ -1570,6 +1777,8 @@ def kosten_buchen(s, anbieter, model, z, cloud):
         e["aus"] += aus
         e["anfragen"] += 1
         e["suchen"] += suchen
+        if cr:
+            e["cache"] = e.get("cache", 0) + cr
         e["usd"] = round(e["usd"] + usd, 6)
         e["lokal"] = not cloud
         if z.get("geschaetzt"):
@@ -1610,10 +1819,14 @@ def kosten_stand(s):
             "gesperrt": bool(limit and m["usd"] >= limit)}
 
 
-def kosten_sperre(s):
+def kosten_sperre(s, anbieter="", model=""):
     limit = float(s.get("kosten_limit") or 0)
     if not limit:
         return ""
+    if anbieter and preis(s, anbieter, model) is None:     # ohne Preis würde mit 0 gebucht und das Limit nie erreicht
+        return (f"Kostenlimit ist gesetzt, für das Modell {model} kennt Jarvis aber keinen Preis. So könnte das Limit nicht "
+                "greifen, deshalb habe ich nichts gesendet. Trag den Preis unter KI & Modelle, Eigene Preise ein "
+                "(zum Beispiel: modellname = 1.25 / 10) oder setze das Limit auf 0.")
     monat = datetime.date.today().strftime("%Y-%m")
     with LOCK:
         usd = sum(e.get("usd", 0) for tag, es in KOSTEN["tage"].items() if tag.startswith(monat) for e in es.values() if not e.get("lokal"))
@@ -1640,6 +1853,12 @@ def bot_settings(s, bot):
     b["_maxtok"] = 2500                  # Bots dürfen ausführlich arbeiten
     b["websuche"] = bool(bot.get("websuche"))
     return b
+
+
+def bot_ist_cloud(s, bot):
+    """Würde dieser Bot ins Internet schicken? (ohne Privat-Weiche, nur nach Anbieter und Adresse)"""
+    bs = bot_settings(s, bot)
+    return ist_cloud(bs, bs["anbieter"]) and not s.get("strikt_lokal")
 
 
 def bot_ziel(s, bot, text, erzwingen=False, privat=False):
@@ -1745,6 +1964,8 @@ def bot_lauf(s, bot, aufgabe, msgs, emit, strom=True, erzwingen=False, privat=Fa
             full.append(out)
             if strom:
                 emit({"t": "delta", "text": out})
+    except Abgebrochen:
+        raise
     except KIError as e:
         err = str(e)
     except Exception as e:
@@ -1758,7 +1979,7 @@ def bot_lauf(s, bot, aufgabe, msgs, emit, strom=True, erzwingen=False, privat=Fa
     botstat(bot["id"], {"zeit": datetime.datetime.now().strftime("%H:%M:%S"), "aufgabe": kurz, "antwort": err or antwort,
                         "dauer": sek, "modell": m, "ok": not err},
             anzahl=old + (0 if err else 1), zuletzt=datetime.datetime.now().strftime("%d.%m. %H:%M"),
-            aufgabe=kurz, dauer=sek, modell=m, fehler=err)
+            aufgabe=kurz if s.get("bot_verlauf", True) else "", dauer=sek, modell=m, fehler=err)   # Verlauf aus: auch die letzte Aufgabe nicht
     emit({"t": "bot", "phase": "ende", "id": bot["id"], "name": bot["name"], "dauer": sek, "ok": not err})
     if err:
         if strom:
@@ -1789,6 +2010,8 @@ def ha_abruf(s, pfad, daten=None):
     try:
         with http(s["ha_url"] + pfad, daten, {"Authorization": "Bearer " + s["ha_token"]}, timeout=8) as r:
             return json.loads(r.read().decode("utf-8") or "null")
+    except Umweg as e:
+        raise KIError("Home Assistant: " + http_error_text(e))
     except urllib.error.HTTPError as e:
         raise KIError({401: "Home Assistant lehnt den Token ab.", 404: "Home Assistant kennt das Gerät oder den Dienst nicht."}.get(
             e.code, f"Home Assistant meldet Fehler {e.code}."))
@@ -1850,6 +2073,8 @@ def webhook_routine(s, wert):
             return True, f"Webhook gesendet (Antwort {r.status})"
     except ValueError:
         return False, "Die Zusatzdaten sind kein gültiges JSON"
+    except Umweg as e:
+        return False, "Der Webhook leitet weiter. " + http_error_text(e).split(". ", 1)[-1].rstrip(".")
     except urllib.error.HTTPError as e:
         return False, f"Der Webhook antwortet mit Fehler {e.code}"
     except (urllib.error.URLError, OSError):
@@ -1859,6 +2084,7 @@ def webhook_routine(s, wert):
 HA_AN = re.compile(r"\b(an|ein|anschalten|einschalten|anmachen|aktiviere|aktivieren|starte|starten)\b")
 HA_AUS = re.compile(r"\b(aus|ab|ausschalten|abschalten|ausmachen|deaktiviere|deaktivieren|stopp|stoppe)\b")
 HA_FRAGE = re.compile(r"^\s*(ist|sind|läuft|laeuft|brennt|wie|was|welche|status)\b|\?\s*$")
+HA_START = re.compile(r"\b(los|ausführen|ausfuehren|führe|fuehre|abspielen)\b")       # Szenen und Skripte brauchen ein Startwort
 
 
 def ha_befehl(u, s):
@@ -1877,8 +2103,10 @@ def ha_befehl(u, s):
         return None
     g = max(treffer, key=lambda x: len(x["name"]))
     art = g["id"].split(".")[0]
+    if VERNEINT_RE.search(_norm(u)) or ERKLAER_RE.search(_norm(u)):
+        return None                                # "Licht bitte nicht ausschalten", "Was macht Kinoabend?": nichts schalten
     try:
-        if HA_FRAGE.search(u):
+        if HA_FRAGE.search(u) and not HOEFLICH_RE.search(_norm(u)):
             z = {"on": "an", "off": "aus", "unavailable": "nicht erreichbar", "playing": "spielt", "paused": "pausiert",
                  "open": "offen", "closed": "geschlossen", "idle": "bereit"}.get(g["zustand"], g["zustand"])
             return True, f"{g['name']} ist {z}."
@@ -1901,12 +2129,59 @@ def ha_befehl(u, s):
         if HA_AUS.search(u) and art not in ("scene", "script"):
             ha_dienst(s, art + ".turn_off", g["id"])
             return True, f"{g['name']} ist aus."
-        if HA_AN.search(u) or art in ("scene", "script"):
+        if HA_AN.search(u) or (art in ("scene", "script") and HA_START.search(u)):
             ha_dienst(s, art + ".turn_on", g["id"])
             return True, f"{g['name']} ist an." if art not in ("scene", "script") else f"{g['name']} gestartet."
     except KIError as e:
         return False, str(e)
     return None
+
+
+# ---------------------------------------------------------------- Websuche über eine eigene SearXNG-Instanz
+# Für Ollama und OpenAI-kompatible KIs, die selbst nicht ins Netz können. Jarvis fragt SearXNG und gibt der KI die
+# Treffer (Titel, Adresse, kurzer Auszug) mit. Ganze Webseiten werden nicht geladen: Das hält die Anfrage klein.
+SUCH_RE = re.compile(r"\b(such\w*|google\w*|recherchier\w*|im\s+(?:internet|netz|web)|online|aktuell\w*|neueste\w*|"
+                     r"nachrichten|news|schlagzeilen)\b")
+SUCH_VORN = re.compile(r"^\s*(?:hey\s+\w+[,\s]+)?(?:bitte\s+)?(?:kannst du\s+)?(?:mal\s+)?(?:such\w*|google\w*|recherchier\w*|schau)\s+"
+                       r"(?:mal\s+|bitte\s+)*(?:im\s+(?:internet|netz|web)\s+)?(?:nach\s+)?", re.I)
+
+
+def suche_an(s):
+    return bool(s.get("websuche")) and s.get("suche_dienst") == "searxng" and bool(s.get("suche_url")) and not s.get("strikt_lokal")
+
+
+def searx_suche(s, frage, n=5):
+    """Fragt die eigene SearXNG-Instanz. Liefert [{titel, url, text}] oder wirft KIError."""
+    url = (s.get("suche_url") or "").rstrip("/")
+    if not url:
+        raise KIError("Keine SearXNG-Adresse eingetragen (Einstellungen, KI & Modelle, Websuche).")
+    if s.get("strikt_lokal"):
+        raise KIError(STRIKT_SPERRE + " Auch die Websuche ist gesperrt, denn SearXNG fragt Suchmaschinen im Internet.")
+    q = urllib.parse.urlencode({"q": frage.strip()[:200], "format": "json", "language": "de", "safesearch": 1})
+    try:
+        j = get_json(url + "/search?" + q, timeout=12)
+    except urllib.error.HTTPError as e:
+        if e.code == 403 and not isinstance(e, Umweg):
+            raise KIError("SearXNG lehnt die Anfrage ab (403). Meist ist das JSON-Format aus: In der settings.yml der Instanz "
+                          "unter search, formats die Zeile json ergänzen und SearXNG neu starten.")
+        raise KIError("SearXNG: " + http_error_text(e))
+    except (urllib.error.URLError, OSError, ValueError):
+        raise KIError(f"SearXNG ist nicht erreichbar ({url}).")
+    out = []
+    for r in (j.get("results") if isinstance(j, dict) else None) or []:
+        if isinstance(r, dict) and str(r.get("url", "")).startswith("http") and len(out) < n:
+            out.append({"titel": re.sub(r"\s+", " ", str(r.get("title") or ""))[:160],
+                        "url": str(r["url"])[:300], "text": re.sub(r"\s+", " ", str(r.get("content") or ""))[:320]})
+    return out
+
+
+def such_kontext(begriff, treffer):
+    if not treffer:
+        return f"WEBSUCHE nach '{begriff}': keine Treffer. Sag ehrlich, dass du dazu nichts gefunden hast."
+    zeilen = [f"{i}. {t['titel']} ({urllib.parse.urlparse(t['url']).hostname or ''}): {t['text']}" for i, t in enumerate(treffer, 1)]
+    return (f"WEBSUCHE nach '{begriff}' (Auszüge, nicht ganze Seiten):\n" + "\n".join(zeilen) +
+            "\nNutze für aktuelle Fakten nur diese Treffer und nenne die Quelle in Worten (zum Beispiel: laut tagesschau.de). "
+            "Steht die Antwort nicht drin, sag das ehrlich.")
 
 
 # ---------------------------------------------------------------- Chat
@@ -1918,10 +2193,15 @@ def run_chat(payload, emit):
     raw = [m for m in (payload.get("messages") or []) if isinstance(m, dict)]
     n = 8 if s.get("sparmodus") else 20                # so viele Nachrichten des Verlaufs gehen mit
     msgs = clean_history(raw, n=n)
-    if not msgs:
+    if not msgs or not raw or raw[-1].get("role") == "assistant":
         return emit({"t": "error", "message": "Leere Nachricht."})
-    text = msgs[-1]["content"]
+    # Die aktuelle Frage ist genau die letzte Nachricht. clean_history fasst aufeinanderfolgende Nachrichten zusammen,
+    # dann stünde hier auch eine frühere (vielleicht lokale) Nachricht mit drin.
+    text = str(raw[-1].get("content") or "").strip()[:6000]
+    if not text:
+        return emit({"t": "error", "message": "Leere Nachricht."})
     u = text.lower()
+    zr = {"cloud": False, "rein": True}               # wurde in dieser Runde eine Cloud-KI gefragt, und nur sie?
     erzwingen = bool(payload.get("erzwingen_cloud"))
     s["_maxtok"] = 2500 if s.get("pc_an") and s.get("pc_schreiben") else MAXTOK.get(s.get("antwortlaenge"), 600)
     full = []
@@ -1933,10 +2213,16 @@ def run_chat(payload, emit):
     def fertig(t=None):
         if t:
             sag(t)
-        emit({"t": "done", "text": "".join(full).strip()})
+        ende = "".join(full).strip()
+        if zr["cloud"] and zr["rein"]:
+            cloud_merken("assistant", ende)              # die Antwort der Cloud-KI darf später wieder als Verlauf mit
+        emit({"t": "done", "text": ende})
 
     def frage_ki(system, tf, leise=False):
         """Schickt die Frage an die gewählte KI und reicht die Antwort durch. Liefert False, wenn es einen Fehler gab."""
+        if ist_cloud(s, anbieter) and not zr["cloud"]:
+            zr["cloud"] = True
+            cloud_merken("user", text)                   # diese Frage hat den PC verlassen und darf später als Verlauf mit
         try:
             for chunk in ki_stream(s, anbieter, model, system, msgs, lambda e: emit({"t": "action", **e})):
                 out = tf.feed(chunk)
@@ -1946,6 +2232,8 @@ def run_chat(payload, emit):
             if out:
                 sag(out)
             return True
+        except Abgebrochen:
+            raise
         except KIError as e:
             fehler = str(e)
         except Exception as e:
@@ -1964,9 +2252,19 @@ def run_chat(payload, emit):
     bot, aufgabe = bot_finden(text, s)
     if bot:
         bs = bot_settings(s, bot)
-        vorher = [m for m in raw[:-1] if not (m.get("privat") and ist_cloud(bs, bs["anbieter"]) and not s.get("strikt_lokal"))]
+        ziel_cloud = ist_cloud(bs, bs["anbieter"]) and not s.get("strikt_lokal")
+        vorher = fuer_cloud(raw[:-1]) if ziel_cloud else raw[:-1]
         bmsgs = clean_history(vorher + [{"role": "user", "content": aufgabe}], n=n)
-        res = bot_lauf(s, bot, aufgabe, bmsgs, emit, strom=True, erzwingen=erzwingen, wie="direkt")
+        ort = {}
+
+        def bemit(e):
+            if e.get("t") == "bot" and e.get("phase") == "start":
+                ort["cloud"] = bool(e.get("cloud"))
+            emit(e)
+        res = bot_lauf(s, bot, aufgabe, bmsgs, bemit, strom=True, erzwingen=erzwingen, wie="direkt")
+        if ort.get("cloud") and res:
+            cloud_merken("user", text)
+            cloud_merken("assistant", (res or "").strip())
         return emit({"t": "done", "text": res or ""})
     anbieter, model = pick_model(s)
 
@@ -2009,8 +2307,8 @@ def run_chat(payload, emit):
     if cloud and not mem_ok and kurz and any(a.get("typ") == "gedaechtnis" for a in actions):
         emit({"t": "privat", "weiter": "lokal", "gruende": ["Gedächtnis bleibt lokal"], "modell": "ohne KI"})
         return fertig(" ".join(kurz))
-    if cloud:                                          # privat markierte Nachrichten gehen nie in die Cloud
-        msgs = clean_history([m for m in raw[:-1] if not m.get("privat")] + [{"role": "user", "content": text}], n=n)
+    if cloud:     # In die Cloud geht nur Verlauf, der schon in der Cloud war (siehe fuer_cloud). Eine Markierung aus dem Browser zählt nicht.
+        msgs = clean_history(fuer_cloud(raw[:-1]) + [{"role": "user", "content": text}], n=n)
     if not model and kurz:                             # keine KI erreichbar, der Befehl (Timer, Wetter ...) ist aber erledigt
         return fertig(" ".join(kurz))
     if not model:
@@ -2019,10 +2317,32 @@ def run_chat(payload, emit):
             "claude": "Kein Claude-Modell verfügbar. Ist der Schlüssel in den Einstellungen eingetragen?",
             "openai": "Kein Modell verfügbar. Sind Basis-Adresse und Schlüssel in den Einstellungen eingetragen?"}[anbieter]})
     emit({"t": "model", "anbieter": anbieter, "modell": model, "cloud": cloud})
-    websuche = anbieter == "claude" and bool(s.get("websuche"))
+    websuche = anbieter == "claude" and bool(s.get("websuche")) and s.get("suche_dienst") != "searxng"
+    searx = suche_an(s) and not gruende           # private Nachricht: auch keine Suchbegriffe ins Netz
+
+    def suchen(begriff):
+        if privat_erkennen(begriff, s):
+            return "WEBSUCHE nicht ausgeführt: Der Suchbegriff enthält private Daten. Sag das dem Nutzer kurz."
+        emit({"t": "action", "typ": "suche", "text": "Websuche: " + begriff[:60]})
+        try:
+            return such_kontext(begriff, searx_suche(s, begriff))
+        except KIError as e:
+            emit({"t": "action", "typ": "suche", "text": "Websuche fehlgeschlagen"})
+            return f"WEBSUCHE fehlgeschlagen ({e}). Sag dem Nutzer ehrlich, dass die Suche nicht geklappt hat."
+    gesucht = False
+    if searx and SUCH_RE.search(u) and not actions:    # "Such mal nach ...", "aktuelle Nachrichten": gleich suchen (kein anderer Befehl erkannt)
+        ctx.append(suchen(SUCH_VORN.sub("", text).strip(" ?.!") or text))
+        gesucht = True
     tf = TagFilter()
-    if not frage_ki(system_prompt(s, ctx, websuche, mem_ok, pc_ok=not pcb), tf):
+    if not frage_ki(system_prompt(s, ctx, websuche, mem_ok, pc_ok=not pcb, lokal=not cloud, suche_tag=searx and not gesucht), tf):
         return
+    if tf.suche and searx and not gesucht:         # die KI hat selbst eine Suche angefordert ([suche: ...]), höchstens eine
+        ctx.append(suchen(tf.suche[0]))
+        tf = TagFilter()
+        if full and not "".join(full).endswith((" ", "\n")):
+            sag(" ")
+        if not frage_ki(system_prompt(s, ctx, False, mem_ok, pc_ok=not pcb, lokal=not cloud), tf):
+            return
     if s.get("auto_merken"):
         for m in tf.merk[:2]:
             it = mem_add(m)
@@ -2031,18 +2351,28 @@ def run_chat(payload, emit):
 
     # ---- PC-Steuerung: Jarvis hat eine Aktion verlangt ([pc: aktion | ziel | inhalt]). Bis zu 4 Schritte nacheinander.
     s_ohne_suche = dict(s, websuche=False)
-    schritt, verlauf = 0, []
+    schritt, verlauf, getan = 0, [], set()
     while tf.pc and s.get("pc_an") and schritt < 4:
         schritt += 1
         ak, ziel, inhalt = tf.pc[0]
-        verlauf.append(f"ERGEBNIS DER PC-AKTION {schritt} ({pc_text(ak, ziel)}):\n{pc_aktion(s, ak, ziel, inhalt, emit, cloud)}")
-        extra = "\n\n".join(verlauf) + ("\n\nAntworte dem Nutzer jetzt auf Grundlage dieses Ergebnisses. Du darfst eine weitere Aktion "
-                                         "auslösen, wenn sie nötig ist." if schritt < 4 else "\n\nAntworte jetzt, keine weitere Aktion.")
+        schluessel = (ak.strip().lower(), ziel.strip().lower(), inhalt.strip())
+        doppelt = schluessel in getan
+        getan.add(schluessel)
+        if doppelt:                                    # dieselbe Aktion nochmal: nicht ausführen, Schleife beenden
+            verlauf.append(f"HINWEIS: Die Aktion ({pc_text(ak, ziel)}) wurde in dieser Runde bereits erfolgreich ausgeführt. "
+                           "Sie wird nicht wiederholt.")
+        else:
+            verlauf.append(f"ERGEBNIS DER PC-AKTION {schritt} ({pc_text(ak, ziel)}):\n{pc_aktion(s, ak, ziel, inhalt, emit, cloud)}")
+        weiter = schritt < 4 and not doppelt
+        extra = "\n\n".join(verlauf) + ("\n\nAntworte dem Nutzer jetzt auf Grundlage dieses Ergebnisses. Eine weitere Aktion nur, "
+                                         "wenn sie etwas anderes tut als die bisherigen." if weiter else "\n\nAntworte jetzt, keine weitere Aktion.")
         tf = TagFilter()
         if full and not "".join(full).endswith((" ", "\n")):
             sag(" ")
-        if not frage_ki(system_prompt(s_ohne_suche, ctx + [extra], False, mem_ok, pc_ok=schritt < 4), tf):
+        if not frage_ki(system_prompt(s_ohne_suche, ctx + [extra], False, mem_ok, pc_ok=weiter, lokal=not cloud), tf):
             return
+        if not weiter:
+            break
 
     # ---- Delegation: Jarvis hat eine Aufgabe an einen Bot abgegeben ([bot: Name | Aufgabe])
     if tf.bots and s.get("bot_delegieren"):
@@ -2054,14 +2384,27 @@ def run_chat(payload, emit):
             return fertig(f"Den Bot {bname} gibt es nicht.")
         if full and not "".join(full).endswith((" ", "\n")):
             sag(" ")
+        if not cloud and bot_ist_cloud(s, bot):
+            # Ein lokales Gespräch kann Gedächtnis, Dateien und lokalen Verlauf enthalten. Was davon in der Aufgabe steht,
+            # würde mit an den Cloud-Bot gehen. Deshalb gibt Jarvis lokal nichts selbst an die Cloud ab.
+            return fertig(f"Das wäre eine Aufgabe für {bot['name']}, aber {bot['name']} arbeitet in der Cloud. Aus einem lokalen "
+                          f"Gespräch gebe ich nichts selbst dorthin ab. Wenn du willst, sprich ihn direkt an: @{bot['name']} und die Aufgabe.")
         spar = bool(s.get("sparmodus"))
         # Sparmodus: Die Antwort des Bots geht direkt an den Nutzer. Sonst fasst Jarvis sie in eigenen Worten zusammen (ein KI-Aufruf mehr).
-        res = bot_lauf(s, bot, aufgabe, [{"role": "user", "content": aufgabe}], emit, strom=spar, erzwingen=erzwingen,
+        ort = {}
+
+        def bemit(e):
+            if e.get("t") == "bot" and e.get("phase") == "start":
+                ort["cloud"] = bool(e.get("cloud"))
+            emit(e)
+        res = bot_lauf(s, bot, aufgabe, [{"role": "user", "content": aufgabe}], bemit, strom=spar, erzwingen=erzwingen,
                        privat=bool(gruende), wie="delegiert")
         if spar:
             if res:
                 full.append(res)
-            return emit({"t": "done", "text": "".join(full).strip()})
+                if not ort.get("cloud"):
+                    zr["rein"] = False                 # ein lokaler Bot hat mitgeschrieben: diese Antwort bleibt lokal
+            return fertig()
         extra = (f"ERGEBNIS VON BOT {bot['name']} (Aufgabe: {aufgabe}):\n{res[:6000]}\n\nGib dem Nutzer jetzt die Antwort in deinen "
                  f"Worten weiter und erwähne kurz, dass {bot['name']} das erledigt hat. Erfinde nichts dazu.") if res else \
             f"Der Bot {bot['name']} konnte die Aufgabe nicht erledigen (Fehler). Sag das ehrlich und biete an, es selbst zu versuchen."
@@ -2216,8 +2559,10 @@ class Handler(BaseHTTPRequestHandler):
         rel = urllib.parse.unquote(path).lstrip("/").replace("\\", "/")
         full = os.path.realpath(os.path.join(BASE, rel))
         ext = os.path.splitext(full)[1].lower()
-        erlaubt = rel == "jarvis.html" or rel.startswith(ORDNER)
-        if not erlaubt or not full.startswith(BASE + os.sep) or ext not in STATIC or not os.path.isfile(full):
+        innen = full.startswith(BASE + os.sep)
+        echt = os.path.relpath(full, BASE).replace("\\", "/") if innen else ""     # erst auflösen (core/../x), dann prüfen
+        erlaubt = echt == "jarvis.html" or echt.startswith(ORDNER)
+        if not erlaubt or not innen or ext not in STATIC or not os.path.isfile(full):
             return self.send_json(404, {"error": "Nicht gefunden: " + path})
         with open(full, "rb") as f:
             data = f.read()
@@ -2267,6 +2612,12 @@ class Handler(BaseHTTPRequestHandler):
             return self.send_json(200, public_settings(s))
         if path == "/api/test":
             s = load_settings()
+            if data.get("anbieter") == "searxng":
+                try:
+                    t = searx_suche(s, "Wetter Berlin", 3)
+                    return self.send_json(200, {"ok": True, "models": [x["titel"] for x in t], "treffer": len(t)})
+                except KIError as e:
+                    return self.send_json(200, {"ok": False, "models": [], "fehler": str(e)})
             fn = {"ollama": ollama_models, "claude": claude_models, "openai": openai_models}.get(data.get("anbieter"))
             if not fn:
                 return self.send_json(400, {"ok": False, "fehler": "Unbekannter Anbieter"})
@@ -2340,13 +2691,31 @@ class Handler(BaseHTTPRequestHandler):
             self.send_header("Cache-Control", "no-store")
             self.end_headers()
 
+            weg = {"ja": False}
+
             def emit(obj):
+                if weg["ja"]:
+                    if obj.get("t") == "error":
+                        fehler_log("Chat (Browser schon getrennt): " + str(obj.get("message")))
+                    raise Abgebrochen()
                 try:
                     self.wfile.write((json.dumps(obj, ensure_ascii=False) + "\n").encode("utf-8"))
                     self.wfile.flush()
-                except (BrokenPipeError, ConnectionResetError):
+                except OSError:                          # BrokenPipe, ConnectionReset, unter Windows ConnectionAborted
+                    weg["ja"] = True
+                    if obj.get("t") == "error":
+                        fehler_log("Chat (Browser getrennt): " + str(obj.get("message")))
+                    raise Abgebrochen()
+            try:
+                run_chat(data, emit)
+            except Abgebrochen:
+                pass                                     # die laufende KI-Anfrage ist beendet, angefangene Kosten sind gebucht
+            except Exception as e:                       # darf nie still verschwinden
+                fehler_log(f"Chat: unerwarteter Fehler {type(e).__name__}: {e}")
+                try:
+                    emit({"t": "error", "message": f"Unerwarteter Fehler im Server: {type(e).__name__}. Details stehen in fehler.log."})
+                except Abgebrochen:
                     pass
-            run_chat(data, emit)
             return
         return self.send_json(404, {"error": "Unbekannt: " + path})
 
@@ -2355,6 +2724,7 @@ def main():
     load_settings()
     botstat_load()
     kosten_load()
+    cloud_verlauf_load()
     srv, port = None, PORT
     for p in range(PORT, PORT + 10):
         try:

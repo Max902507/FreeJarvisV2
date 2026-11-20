@@ -1,4 +1,4 @@
-/* FreeJarvis · Widgets (2.5)
+/* FreeJarvis · Widgets
    Kleine Fenster vorne auf der Oberfläche: Wetter, Notizen, Uhr, System.
    Einschalten: Einstellungen -> Oberfläche -> Widgets.
    Verschieben: an der Titelleiste ziehen. Größe: an der Ecke unten rechts ziehen (die Schrift wächst mit).

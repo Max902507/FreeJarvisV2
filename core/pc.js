@@ -18,7 +18,7 @@
   function frage(a) {
     const el = document.createElement("div"); el.className = "pa jv-glass";
     el.innerHTML = `<div class="pa-h"><i></i><b>${esc((J.settings && J.settings.name) || "Jarvis")} möchte etwas an deinem PC tun</b><em>90</em></div>
-<p>${esc(a.text)}</p>${a.vorschau ? `<pre>${esc(a.vorschau)}${a.vorschau.length >= 600 ? "\n…" : ""}</pre>` : ""}
+<p>${esc(a.text)}</p>${a.aktion === "schreiben" ? `<small class="pa-z">Vollständiger Inhalt, genau so wird die Datei geschrieben: ${a.vorschau.length.toLocaleString("de-DE")} Zeichen, ${a.vorschau.split("\n").length} Zeilen</small><pre>${esc(a.vorschau) || "(leer)"}</pre>` : ""}
 <div class="pa-b"><button class="jv-btn" data-ok="0">Ablehnen</button><button class="jv-btn jv-primary" data-ok="1">Erlauben</button></div>`;
     wrap.appendChild(el);
     let left = 90, done = false;

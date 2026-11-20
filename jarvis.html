@@ -95,8 +95,11 @@
     const f = $("vxFeed"), d = document.createElement("div"); d.className = "it";
     const n = NODES.find(x => x.id === (KIND2NODE[kind] || kind));
     const col = n ? `rgb(${n.col})` : kind === "fehler" ? "#ff6a6a" : "var(--ac)";
-    d.innerHTML = `<span>${new Date().toLocaleTimeString("de-DE")}</span><b style="color:${col}">${(n ? n.label : kind).toUpperCase()}</b>`;
-    d.appendChild(document.createTextNode(String(text).slice(0, 90)));
+    // Nur DOM-Knoten mit textContent: kein Wert landet als HTML im Dokument
+    const zeit = document.createElement("span"), was = document.createElement("b");
+    zeit.textContent = new Date().toLocaleTimeString("de-DE");
+    was.textContent = String(n ? n.label : kind).toUpperCase(); was.style.color = col;
+    d.append(zeit, was, document.createTextNode(String(text).slice(0, 90)));
     f.prepend(d); while (f.children.length > 8) f.lastChild.remove();
     $("vxCount").textContent = events; stats();
   }
@@ -113,7 +116,9 @@
     init(J) {
       build();
       const nm = (J.settings.name || "Jarvis").toUpperCase();
-      $("vxName").innerHTML = nm.length <= 8 ? nm.split("").join(".") + "<span>.</span>" : nm;
+      const el = $("vxName");            // Name nur als Text, der Zierpunkt als eigenes Element
+      el.textContent = nm.length <= 8 ? nm.split("").join(".") : nm;
+      if (nm.length <= 8) { const p = document.createElement("span"); p.textContent = "."; el.appendChild(p); }
       document.title = nm + " · Vortex";
       J.on("module", m => poke(m));
       J.on("event", e => { addFeed(e.kind, e.text); poke(KIND2NODE[e.kind], e.text); if (e.kind === "gedaechtnis") J.api("/api/memory").then(r => { memCount = r.items.length; stats(); }).catch(() => { }); });

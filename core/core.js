@@ -168,7 +168,7 @@
   function clearChat() { J.history = []; store.set("history", []); const l = $("jv-log"); if (l) l.querySelectorAll(".jv-msg").forEach(n => n.remove()); }
   J.clearChat = clearChat;
   function restoreHistory() {
-    // Einmalig beim Umstieg auf 2.5: alte Verläufe aus früheren Versionen verwerfen.
+    // Einmalig beim Umstieg von Version 1.x: alte Verläufe aus früheren Versionen verwerfen.
     // Alle Versionen laufen auf derselben Adresse, deshalb liegt der Verlauf von 1.1 sonst noch im Browser.
     if (store.get("verlaufstand", 0) < 25) { store.set("history", []); store.set("verlaufstand", 25); }
     if (J.settings && J.settings.chat_speichern === false) { store.set("history", []); J.history = []; return; }
@@ -177,6 +177,9 @@
   }
 
   /* =============================================================== Senden + Antwort (Streaming) */
+  // Höchstens 16 Nachrichten gehen mit. Gekürzt wird in Achterschritten statt jede Runde um eine: So bleibt der Anfang
+  // des Verlaufs ein paar Runden gleich, und Claude kann ihn günstig aus dem Zwischenspeicher lesen (Prompt-Caching).
+  function verlaufZumSenden() { const n = J.history.length; return J.history.slice(n <= 16 ? 0 : (Math.floor((n - 16) / 8) + 1) * 8); }
   const STOP_RE = /^(stopp?|halt|sei still|ruhe|schweig|psst|aufhören|hör auf|genug)[\s.!]*$/i;
   let chatCtrl = null;
   function abortChat() { if (chatCtrl) { chatCtrl.abort(); chatCtrl = null; } }
@@ -199,7 +202,7 @@
     SPEAK.reset();
     const after = [];
     try {
-      const r = await fetch("/api/chat", { method: "POST", headers: KOPF, body: JSON.stringify({ messages: J.history.slice(-16), erzwingen_cloud: !!opt.force }), signal: ctrl.signal });
+      const r = await fetch("/api/chat", { method: "POST", headers: KOPF, body: JSON.stringify({ messages: verlaufZumSenden(), erzwingen_cloud: !!opt.force }), signal: ctrl.signal });
       if (!r.ok || !r.body) throw new Error("Server antwortet nicht (HTTP " + r.status + ")");
       const rd = r.body.getReader(), dec = new TextDecoder(); let buf = "";
       for (; ;) {
@@ -381,7 +384,7 @@
       });
       URL.revokeObjectURL(url); audio = null;
     }
-    let VOICES = [];
+    let VOICES = [], stummGesagt = false;
     function loadVoices() { try { VOICES = speechSynthesis.getVoices() || []; } catch (e) { VOICES = []; } J.emit("voices", VOICES); }
     if (window.speechSynthesis) { loadVoices(); speechSynthesis.onvoiceschanged = loadVoices; }
     function pickVoice() {
@@ -396,7 +399,15 @@
       return new Promise(res => {
         if (!window.speechSynthesis) { setTimeout(res, Math.min(4000, text.length * 55)); return; }
         const u = new SpeechSynthesisUtterance(text), st = J.settings || {};
-        const v = pickVoice(); if (v) u.voice = v; u.lang = (v && v.lang) || st.sprache || "de-DE";
+        const v = pickVoice();
+        if (st.strikt_lokal && !v) {
+          // Ohne festgelegte lokale Stimme entscheidet der Browser selbst, und manche Browser nehmen dann eine
+          // Online-Stimme. Im strikten Modus deshalb lieber stumm bleiben und sagen, warum.
+          if (!stummGesagt) { stummGesagt = true; toast("Strikt lokal: Der Browser hat keine Stimme, die auf dem PC selbst läuft. " + ((J.settings && J.settings.name) || "Jarvis") + " antwortet deshalb nur im Chat.", true, 9000); }
+          J.emit("event", { kind: "privat", text: "Sprachausgabe blockiert: keine lokale Stimme" });
+          setTimeout(res, 30); return;
+        }
+        if (v) u.voice = v; u.lang = (v && v.lang) || st.sprache || "de-DE";
         u.rate = +st.tempo || 1; u.pitch = +st.tonhoehe || 1; u.volume = Math.min(1, +st.lautstaerke || 1);
         let done = false; const fin = () => { if (done) return; done = true; synthOn = false; clearTimeout(to); res(); };
         u.onstart = () => { synthOn = true; }; u.onend = fin; u.onerror = fin; u.onboundary = () => { bump = 1; };
@@ -574,12 +585,17 @@
   function showModelPill(a, m) { J.current = { anbieter: a, modell: m }; J.emit("model", J.current); }
 
   /* =============================================================== Datenschutz-Anzeige */
+  // Ob eine Adresse auf dem PC, im Heimnetz oder im Internet liegt, entscheidet der Server (dieselbe Prüfung wie beim Senden).
+  // Eine Adresse, die er noch nicht kennt (z. B. noch nicht gespeichert), gilt vorsichtshalber als Internet.
+  function ortVon(url, st) { const o = (st || J.settings || {})._orte || {}; return o[String(url || "").trim().replace(/\/+$/, "")] || "internet"; }
   function isCloud(p, st) {
     st = st || J.settings || {};
     if (p === "claude") return true;
-    if (p === "openai") { const u = (st.openai_url || "").toLowerCase(); return !(u.includes("localhost") || u.includes("127.0.0.1")); }
+    if (p === "openai") return ortVon(st.openai_url, st) === "internet";
+    if (p === "ollama") return ortVon(st.ollama_url, st) === "internet";
     return false;
   }
+  J.ortVon = ortVon;
   J.isCloud = isCloud;
   let privT = 0;
   function privBadge() {
@@ -607,9 +623,10 @@
     const st2 = st.strikt_lokal ? "nur Stimmen, die auf deinem PC installiert sind" : st.stimme === "elevenlabs" ? "der gesprochene Text geht an ElevenLabs" : st.stimme === "aus" ? "aus" : "Browser-Stimme. Achtung: Stimmen mit „Online“ oder „Natural“ im Namen laufen über Server von Microsoft bzw. Google";
     L.push(["Sprachausgabe", st2, !st.strikt_lokal && st.stimme !== "aus"]);
     L.push(["Wetter", st.strikt_lokal ? "aus" : "nur der Ortsname geht an Open-Meteo", !st.strikt_lokal]);
-    if (cloud && st.anbieter === "claude" && st.websuche) L.push(["Websuche", "Claude sucht bei Bedarf im Web", true]);
+    if (st.websuche && !st.strikt_lokal && st.suche_dienst === "searxng" && st.suche_url) L.push(["Websuche", "Suchbegriffe gehen an deine SearXNG-Instanz, die damit Suchmaschinen im Internet fragt. Bei privaten Daten wird nicht gesucht.", true]);
+    else if (cloud && st.anbieter === "claude" && st.websuche) L.push(["Websuche", "Claude sucht bei Bedarf im Web", true]);
     if (st.pc_an) L.push(["PC-Steuerung", cloud && st.pc_cloud ? "Ordnerlisten und Inhalte gelesener Dateien gehen an " + prov : "Datei-Inhalte bleiben auf deinem PC" + (cloud ? " (Lesen geht nur mit lokaler KI)" : ""), cloud && !!st.pc_cloud]);
-    const cb = (st.bots || []).filter(b => b.aktiv && isCloud(b.anbieter || st.anbieter, b.api_url ? Object.assign({}, st, { openai_url: b.api_url }) : st));
+    const cb = (st.bots || []).filter(b => b.aktiv && isCloud(b.anbieter || st.anbieter, b.api_url ? Object.assign({}, st, { openai_url: b.api_url, ollama_url: b.api_url }) : st));
     if ((st.bots || []).some(b => b.aktiv)) L.push(["Bots", st.strikt_lokal ? "arbeiten nur lokal (Ollama)" : cb.length ? "Cloud-Bots: " + cb.map(b => b.name).join(", ") + ". Ihre Aufgaben gehen an den jeweiligen Anbieter. Private Nachrichten bleiben lokal, wenn die Privat-Weiche an ist." : "alle Bots arbeiten lokal", !st.strikt_lokal && cb.length > 0]);
     return '<div class="jv-list">' + L.map(([a, b, out]) => `<div class="jv-li"><span><b style="font-weight:600">${a}</b><br><small style="white-space:normal">${esc(b)}</small></span><small class="${out ? "po" : "pl"}">${out ? "verlässt den PC" : "bleibt lokal"}</small></div>`).join("") + "</div>";
   }
@@ -617,8 +634,11 @@
     const v = $("jv-msel").value;
     if (v === "__reload") { $("jv-msel").innerHTML = "<option>suche …</option>"; await loadModels(); toast("Modelle aktualisiert"); return; }
     const [a, m] = v.split("|"); if (!m) return;
+    const warCloud = isCloud(J.settings.anbieter) && !J.settings.strikt_lokal;
     J.settings = await api("/api/settings", a === "ollama" ? { anbieter: a, modell: m, lokal_modell: m } : { anbieter: a, modell: m });
     privBadge();
+    if (!warCloud && isCloud(a) && !J.settings.strikt_lokal && J.history.length)
+      addMsg("note", "☁ Wechsel in die Cloud: Der bisherige lokale Verlauf bleibt auf dem PC. Die Cloud-KI bekommt nur Nachrichten, die schon in der Cloud waren.");
     toast("Jetzt antwortet: " + m); $("jv-model").classList.add("ok"); $("jv-model").classList.remove("bad");
     J.emit("model", { anbieter: a, modell: m });
   }
@@ -688,11 +708,16 @@
 <div class="box"><h4>Ollama (lokal)</h4><div class="row"><label>Adresse<small>Standard: http://localhost:11434</small></label><input type="url" data-k="ollama_url"></div>
 <div class="row"><label></label><div class="inl"><span class="res" data-res="ollama"></span><button class="jv-btn" data-test="ollama">Verbindung testen</button></div></div></div>
 <div class="box"><h4>Claude (Anthropic)</h4><div class="row"><label>API-Schlüssel<small>beginnt mit sk-ant-…</small></label><input type="password" data-k="claude_key" placeholder="sk-ant-…" autocomplete="off"></div>
-<div class="row"><label>Websuche</label>${sw("websuche", "Claude darf im Web nachsehen (jede Suche kostet extra, deshalb standardmäßig aus)")}</div>
+<div class="row"><label>Zwischenspeicher<small>Prompt-Caching</small></label>${sw("prompt_cache", "Gleichbleibende Teile (Anweisungen, bisheriger Verlauf) liest Claude bei der nächsten Frage aus dem Zwischenspeicher. Das kostet dann nur einen Bruchteil. Empfohlen.")}</div>
 <div class="row"><label></label><div class="inl"><span class="res" data-res="claude"></span><button class="jv-btn" data-test="claude">Verbindung testen</button></div></div></div>
 <div class="box"><h4>OpenAI-kompatibel</h4><div class="row"><label>Basis-Adresse<small>OpenAI: https://api.openai.com/v1<br>LM Studio: http://localhost:1234/v1</small></label><input type="url" data-k="openai_url"></div>
 <div class="row"><label>API-Schlüssel<small>bei LM Studio leer lassen</small></label><input type="password" data-k="openai_key" placeholder="sk-…" autocomplete="off"></div>
 <div class="row"><label></label><div class="inl"><span class="res" data-res="openai"></span><button class="jv-btn" data-test="openai">Verbindung testen</button></div></div></div>
+<div class="box"><h4>Websuche</h4><p class="hint" style="margin:0 0 8px">Standardmäßig aus. Mit Claude sucht Claude selbst (jede Suche kostet extra, und die gefundenen Seiten zählen als Eingabe-Token). Für Ollama und OpenAI-kompatible KIs geht die Suche über eine eigene <b>SearXNG</b>-Instanz: Jarvis gibt der KI dann die Treffer mit, kurze Auszüge statt ganzer Seiten.</p>
+<div class="row"><label>Websuche</label>${sw("websuche", "Im Web nachsehen dürfen")}</div>
+<div class="row"><label>Suchen über</label><select data-k="suche_dienst"><option value="claude">Claude-Websuche (nur mit Claude)</option><option value="searxng">Eigene SearXNG-Instanz (alle KIs)</option></select></div>
+<div class="row"><label>SearXNG-Adresse<small>z. B. http://localhost:8888<br>JSON muss in der Instanz erlaubt sein</small></label><input type="url" data-k="suche_url" placeholder="http://localhost:8888"></div>
+<div class="row"><label></label><div class="inl"><span class="res" data-res="searxng"></span><button class="jv-btn" data-test="searxng">Suche testen</button></div></div></div>
 <div class="row"><label>Antwortlänge</label><select data-k="antwortlaenge"><option value="kurz">Kurz (1 bis 3 Sätze)</option><option value="normal">Normal</option><option value="ausfuehrlich">Ausführlich</option></select></div>
 <div class="box"><h4>Kosten sparen und im Blick behalten</h4><p class="hint" style="margin:0 0 8px">Betrifft nur Claude und andere Dienste mit API-Schlüssel. Ollama kostet nichts. Abgerechnet wird nach Token: Je mehr Text hin und her geht, desto teurer.</p>
 <div class="row"><label>Sparmodus<small>empfohlen</small></label>${sw("sparmodus", "Kürzerer Verlauf, knappes Gedächtnis, Befehle wie Timer ohne KI-Rückfrage, Bots antworten direkt")}</div>
@@ -768,7 +793,7 @@
 <div class="box"><h4>Routinen</h4><div class="jv-rt" style="font-size:11px;color:var(--mut)"><span>WENN ICH SAGE …</span><span>DANN</span><span>WERT</span><span></span></div><div id="jv-routines"></div>
 <button class="jv-btn" id="jv-rtadd">+ Routine</button></div>
 <div class="box"><h4>Home Assistant <small style="font-weight:400;color:var(--mut)">· Smart Home, für Bastler</small></h4>
-<p class="hint" style="margin:0 0 8px">Schaltet Geräte über dein eigenes Home Assistant: „Schalte das Wohnzimmerlicht an“, „Stehlampe auf 40 Prozent“, „Ist der Fernseher an?“. Läuft ohne KI und ohne Token. Den Token erzeugst du in Home Assistant unter Profil → Sicherheit → Langlebige Zugriffstoken.</p>
+<p class="hint" style="margin:0 0 8px">Schaltet Geräte über dein eigenes Home Assistant: „Schalte das Wohnzimmerlicht an“, „Stehlampe auf 40 Prozent“, „Ist der Fernseher an?“. Das Schalten läuft ohne KI und kostet keine KI-Token. Du brauchst nur den Zugriffstoken von Home Assistant: Den erzeugst du in Home Assistant unter Profil → Sicherheit → Langlebige Zugriffstoken. Szenen und Skripte startet Jarvis nur mit einem Startwort („Starte Kinoabend“, „Kinoabend an“). Verneinte Sätze und Fragen schalten nichts.</p>
 <div class="row"><label>Einschalten</label>${sw("ha_an", "Home Assistant nutzen")}</div>
 <div class="row"><label>Adresse<small>z. B. http://homeassistant.local:8123</small></label><input type="url" data-k="ha_url"></div>
 <div class="row"><label>Token</label><input type="password" data-k="ha_token" autocomplete="off" placeholder="Langlebiger Zugriffstoken"></div>
@@ -925,6 +950,7 @@
         J.settings = await api("/api/settings", readValues(box)); bindValues(box);
         const r = await api("/api/test", { anbieter: p });
         res.className = "res " + (r.ok ? "ok" : "bad");
+        if (p === "searxng") { res.textContent = r.ok ? `✓ SearXNG antwortet · ${r.treffer} Treffer für „Wetter Berlin“` : "✗ " + r.fehler; return; }
         res.textContent = r.ok ? `✓ verbunden · ${r.models.length} Modell${r.models.length === 1 ? "" : "e"}` : "✗ " + r.fehler;
         loadModels();
       } catch (e) { res.className = "res bad"; res.textContent = "✗ " + e.message; }
@@ -986,7 +1012,10 @@
     if (J.started) return;
     J.started = true; $("jv-intro").classList.add("off");
     ac(); tone(330, 990, .5, .06);
-    try { if (window.speechSynthesis) { const u = new SpeechSynthesisUtterance(" "); u.volume = 0; speechSynthesis.speak(u); } } catch (e) { }
+    try {   // stumme Freischaltung der Sprachausgabe; im strikten Modus nur mit einer Stimme, die auf dem PC läuft
+      const v = pickVoice();
+      if (window.speechSynthesis && (v || !J.settings.strikt_lokal)) { const u = new SpeechSynthesisUtterance(" "); u.volume = 0; if (v) u.voice = v; speechSynthesis.speak(u); }
+    } catch (e) { }
     J.S.pulse = 1; J.emit("start");
     micSync();
     if (J.settings.briefing_beim_start) setTimeout(() => send("Briefing bitte", { hidden: true }), 600);

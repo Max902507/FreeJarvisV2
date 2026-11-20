@@ -1,4 +1,4 @@
-/* FreeJarvis · Klang (2.5)
+/* FreeJarvis · Klang
    Leiser Hintergrundklang in Schleife (sounds/hintergrund.mp3) und kurze Effekt-Töne (sounds/*.mp3).
    Alles in Einstellungen -> Oberfläche -> Klang: Schalter und Regler, Änderungen sind sofort zu hören.
    Während Jarvis spricht, wird der Hintergrund automatisch leiser, damit man ihn gut versteht.
