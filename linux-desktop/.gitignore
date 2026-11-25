@@ -1,0 +1,8 @@
+/upstream/
+/stage/
+/node_modules/
+/.build-venv/
+/dist/
+__pycache__/
+.speech-cache/
+/dist-portable/

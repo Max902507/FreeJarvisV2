@@ -1,0 +1,48 @@
+{
+  "name": "freejarvis-desktop",
+  "version": "2.1.0-alpha.1",
+  "description": "FreeJarvis V2 – Linux Desktop (Alpha)",
+  "author": "FreeJarvis: Max Kröner (irgendwasmitIT); desktop integration: community contribution",
+  "private": true,
+  "main": "desktop/main.cjs",
+  "scripts": {
+    "start": "electron .",
+    "test": "node --test tests/*.test.cjs && python3 -m unittest discover -s tests -p 'test_*.py'",
+    "dist:linux": "electron-builder --linux AppImage --x64"
+  },
+  "build": {
+    "appId": "de.freejarvis.desktop",
+    "productName": "FreeJarvis",
+    "artifactName": "FreeJarvis-Linux-${arch}-${version}.${ext}",
+    "files": [
+      "desktop/*.cjs",
+      "package.json"
+    ],
+    "extraResources": [
+      {
+        "from": "stage/assets",
+        "to": "jarvis"
+      },
+      {
+        "from": "stage/runtime/freejarvis-backend",
+        "to": "backend"
+      }
+    ],
+    "linux": {
+      "target": [
+        "AppImage"
+      ],
+      "category": "Utility",
+      "executableName": "freejarvis",
+      "syncDesktopName": true
+    },
+    "directories": {
+      "output": "dist"
+    }
+  },
+  "desktopName": "de.freejarvis.desktop",
+  "devDependencies": {
+    "electron": "45.5.0",
+    "electron-builder": "26.18.0"
+  }
+}
